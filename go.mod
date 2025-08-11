@@ -1,4 +1,4 @@
-module github.com/haccht/tlsver
+module github.com/haccht/tlsbin
 
 go 1.24.5
 

@@ -24,7 +24,8 @@ import (
 
 var (
 	clientHelloStore sync.Map
-	extensionName    = map[uint16]string{
+
+	extensionName = map[uint16]string{
 		0:      "server_name",
 		5:      "status_request",
 		10:     "supported_groups",
@@ -54,7 +55,6 @@ type clientHelloInfo struct {
 	SupportedVersions []string `json:"supported_versions"`
 	CipherSuites      []string `json:"cipher_suites"`
 	SignatureSchemes  []string `json:"sig_schemes"`
-	SupportedCurves   []string `json:"curves"`
 	Extensions        []string `json:"extensions"`
 }
 
@@ -79,7 +79,7 @@ type options struct {
 func mustSelfSignedCert() tls.Certificate {
 	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
-		log.Fatalf("key gen: %v", err)
+		log.Fatalf("keygen: %v", err)
 	}
 	serial, _ := rand.Int(rand.Reader, big.NewInt(1<<62))
 	tpl := &x509.Certificate{
@@ -101,7 +101,7 @@ func mustSelfSignedCert() tls.Certificate {
 	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: priv, Leaf: leaf}
 }
 
-func toCipherSuite(v string) (uint16, error) {
+func strToCipherSuite(v string) (uint16, error) {
 	switch v {
 	case "TLS_RSA_WITH_RC4_128_SHA":
 		return tls.TLS_RSA_WITH_RC4_128_SHA, nil
@@ -157,7 +157,7 @@ func toCipherSuite(v string) (uint16, error) {
 	return 0, fmt.Errorf("Unsupported cipher suite %s", v)
 }
 
-func toTLSVersion(v string) (uint16, error) {
+func strToTLSVersion(v string) (uint16, error) {
 	switch v {
 	case "1.0":
 		return tls.VersionTLS10, nil
@@ -190,11 +190,7 @@ func toTLSVersionName(id uint16) string {
 	return fmt.Sprintf("%s (0x%04x)", tls.VersionName(id), id)
 }
 
-func toSignatureScheme(v tls.SignatureScheme) string {
-	return v.String()
-}
-
-func toCurveName(v tls.CurveID) string {
+func toSignatureSchemeName(v tls.SignatureScheme) string {
 	return v.String()
 }
 
@@ -236,8 +232,7 @@ func main() {
 				SupportedProtos:   ch.SupportedProtos,
 				CipherSuites:      mapToString(ch.CipherSuites, toCipherSuiteName),
 				SupportedVersions: mapToString(ch.SupportedVersions, toTLSVersionName),
-				SignatureSchemes:  mapToString(ch.SignatureSchemes, toSignatureScheme),
-				SupportedCurves:   mapToString(ch.SupportedCurves, toCurveName),
+				SignatureSchemes:  mapToString(ch.SignatureSchemes, toSignatureSchemeName),
 				Extensions:        mapToString(ch.Extensions, toExtensionName),
 			})
 			return nil, nil
@@ -248,8 +243,11 @@ func main() {
 	}
 	if len(opts.TLSVersion) > 0 {
 		var err error
-		tlsConf.MinVersion, err = toTLSVersion(slices.Min(opts.TLSVersion))
-		tlsConf.MaxVersion, err = toTLSVersion(slices.Max(opts.TLSVersion))
+		tlsConf.MinVersion, err = strToTLSVersion(slices.Min(opts.TLSVersion))
+		if err != nil {
+			log.Fatal(err)
+		}
+		tlsConf.MaxVersion, err = strToTLSVersion(slices.Max(opts.TLSVersion))
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -257,14 +255,13 @@ func main() {
 	if len(opts.CipherSuite) > 0 {
 		suites := make([]uint16, len(opts.CipherSuite))
 		for i, v := range opts.CipherSuite {
-			c, err := toCipherSuite(v)
+			c, err := strToCipherSuite(v)
 			if err != nil {
 				log.Fatal(err)
 			}
 			suites[i] = c
 		}
 		tlsConf.CipherSuites = suites
-		fmt.Println(tlsConf.CipherSuites)
 	}
 
 	mux := http.NewServeMux()
@@ -283,13 +280,19 @@ func main() {
 			}
 		}
 
-		var clientSubject string
+		var clientSubjects []string
 		if len(r.TLS.PeerCertificates) > 0 {
-			clientSubject = r.TLS.PeerCertificates[0].Subject.String()
+			clientSubjects = mapToString(r.TLS.PeerCertificates, func(v *x509.Certificate) string {
+				return v.Subject.String()
+			})
 		}
 
 		resp := map[string]any{
 			"client_hello": hello,
+			"mTLS": map[string]any{
+				"enabled":  len(r.TLS.PeerCertificates) > 0,
+				"subjects": clientSubjects,
+			},
 			"negotiated": map[string]any{
 				"sni":          r.TLS.ServerName,
 				"alpn":         r.TLS.NegotiatedProtocol,
@@ -299,10 +302,6 @@ func main() {
 				"did_resume":   r.TLS.DidResume,
 				"scts":         len(r.TLS.SignedCertificateTimestamps),
 				"ocsp_bytes":   len(r.TLS.OCSPResponse),
-			},
-			"mTLS": map[string]any{
-				"enabled": len(r.TLS.PeerCertificates) > 0,
-				"subject": clientSubject,
 			},
 		}
 
