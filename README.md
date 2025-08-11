@@ -1,5 +1,17 @@
 # tlsbin
 
+`tlsbin` is a simple tool for inspecting and debugging TLS (Transport Layer Security) negotiations.  
+This server application allows you to easily observe the details of the TLS handshake between a client and the server.  
+It is especially useful for testing supported TLS versions, cipher suites, ALPN protocols, and certificate configurations.
+
+## Features
+
+- Start a TLS server with customizable address, protocol, and cipher settings
+- View detailed TLS handshake dumps via HTTP requests
+- Inspect Client Hello, negotiated protocol, cipher suite, and more
+- Supports multiple TLS versions and ALPN protocols
+- Easily test mTLS setups (client certificate authentication)
+
 ## Usage
 ```
 $ tlsbin -h
@@ -19,13 +31,13 @@ Help Options:
 ```
 
 
-Execute the binary file.
+To start the TLS server, simply execute the binary:
 ```
 $ tlsbin
 2025/08/11 13:34:00 start listening on https://127.0.0.1:8080
 ```
 
-Send a http request to the server and you will get the TLS negotiation dump.
+Send an HTTP request to the server to get a detailed dump of the TLS negotiation:
 ```
 $ curl -s -k https://localhost:8080
 {
