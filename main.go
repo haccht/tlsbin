@@ -19,34 +19,14 @@ import (
 	"sync"
 	"time"
 
+	"github.com/gaukas/godicttls"
 	"github.com/jessevdk/go-flags"
 )
 
 var (
 	clientHelloStore sync.Map
 
-	extensionName = map[uint16]string{
-		0:      "server_name",
-		5:      "status_request",
-		10:     "supported_groups",
-		11:     "ec_point_formats",
-		13:     "signature_algorithms",
-		16:     "application_layer_protocol_negotiation",
-		18:     "signed_certificate_timestamp",
-		21:     "padding",
-		23:     "extended_master_secret",
-		27:     "compress_certificate",
-		28:     "record_size_limit",
-		34:     "delegated_credentials",
-		35:     "session_ticket",
-		41:     "pre_shared_key",
-		42:     "early_data",
-		43:     "supported_versions",
-		45:     "psk_key_exchange_modes",
-		51:     "key_share",
-		0xfe0d: "encrypted_client_hello",
-		0xff01: "renegotiation_info",
-	}
+	extTypes = godicttls.DictExtTypeValueIndexed
 )
 
 type clientHelloInfo struct {
@@ -154,7 +134,7 @@ func strToCipherSuite(v string) (uint16, error) {
 	case "TLS_CHACHA20_POLY1305_SHA256":
 		return tls.TLS_CHACHA20_POLY1305_SHA256, nil
 	}
-	return 0, fmt.Errorf("Unsupported cipher suite %s", v)
+	return 0, fmt.Errorf("unsupported ciphersuite %s", v)
 }
 
 func strToTLSVersion(v string) (uint16, error) {
@@ -168,7 +148,7 @@ func strToTLSVersion(v string) (uint16, error) {
 	case "1.3":
 		return tls.VersionTLS13, nil
 	}
-	return 0, fmt.Errorf("Unsupported version %s", v)
+	return 0, fmt.Errorf("unsupported TLS version %s", v)
 }
 
 func isGREASE(id uint16) bool {
@@ -180,7 +160,11 @@ func toCipherSuiteName(id uint16) string {
 	if isGREASE(id) {
 		return fmt.Sprintf("Reserved (GREASE) (0x%04x)", id)
 	}
-	return fmt.Sprintf("%s (0x%04x)", tls.CipherSuiteName(id), id)
+	name, ok := godicttls.DictCipherSuiteValueIndexed[id]
+	if !ok {
+		return fmt.Sprintf("Reserved or Unassigned (0x%04x)", id)
+	}
+	return fmt.Sprintf("%s (0x%04x)", name, id)
 }
 
 func toTLSVersionName(id uint16) string {
@@ -198,7 +182,7 @@ func toExtensionName(id uint16) string {
 	if isGREASE(id) {
 		return fmt.Sprintf("Reserved (GREASE) (0x%04x)", id)
 	}
-	n, ok := extensionName[id]
+	n, ok := extTypes[id]
 	if !ok {
 		n = fmt.Sprintf("0x%04x", id)
 	}
@@ -211,6 +195,12 @@ func mapToString[T any](in []T, f func(T) string) []string {
 		out[i] = f(v)
 	}
 	return out
+}
+
+func init() {
+	// add missing extension types
+	extTypes[0xfe0d] = "encrypted_client_hello"
+	extTypes[0xff01] = "renegotiation_info"
 }
 
 func main() {
@@ -226,6 +216,7 @@ func main() {
 	tlsConf := &tls.Config{
 		Certificates: []tls.Certificate{mustSelfSignedCert()},
 		// EncryptedClientHelloKeys: []tls.EncryptedClientHelloKey{ ... }, // uncomment this for ECH
+		ClientAuth: tls.RequestClientCert,
 		GetConfigForClient: func(ch *tls.ClientHelloInfo) (*tls.Config, error) {
 			clientHelloStore.Store(connKey(ch.Conn), clientHelloInfo{
 				ServerName:        ch.ServerName,
