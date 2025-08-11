@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -19,6 +20,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/c2FmZQ/ech"
 	"github.com/gaukas/godicttls"
 	"github.com/jessevdk/go-flags"
 )
@@ -52,6 +54,8 @@ type options struct {
 	Protocol    []string `long:"alpn" description:"List of application protocols" choice:"h2" choice:"http/1.1"`
 	TLSVersion  []string `long:"tls-ver" description:"List of TLS versions" choice:"1.0" choice:"1.1" choice:"1.2" choice:"1.3"`
 	CipherSuite []string `long:"cipher" description:"List of ciphersuites (TLS1.3 ciphersuites are not configurable)"`
+	EnableMTLS  bool     `long:"enable-mtls" description:"Enable mTLS for client certificate"`
+	EnableECH   bool     `long:"enable-ech" description:"Enable Encrypted Client Hello for TLS1.3"`
 	TLSCert     string   `long:"tls-crt" description:"TLS certificate file path"`
 	TLSKey      string   `long:"tls-key" description:"TLS key file path"`
 }
@@ -198,7 +202,7 @@ func mapToString[T any](in []T, f func(T) string) []string {
 }
 
 func init() {
-	// add missing extension types
+	// add extension types which is missing in godicttls
 	extTypes[0xfe0d] = "encrypted_client_hello"
 	extTypes[0xff01] = "renegotiation_info"
 }
@@ -215,8 +219,6 @@ func main() {
 
 	tlsConf := &tls.Config{
 		Certificates: []tls.Certificate{mustSelfSignedCert()},
-		// EncryptedClientHelloKeys: []tls.EncryptedClientHelloKey{ ... }, // uncomment this for ECH
-		ClientAuth: tls.RequestClientCert,
 		GetConfigForClient: func(ch *tls.ClientHelloInfo) (*tls.Config, error) {
 			clientHelloStore.Store(connKey(ch.Conn), clientHelloInfo{
 				ServerName:        ch.ServerName,
@@ -254,6 +256,27 @@ func main() {
 		}
 		tlsConf.CipherSuites = suites
 	}
+    if opts.EnableMTLS {
+		tlsConf.ClientAuth = tls.RequestClientCert
+    }
+	if opts.EnableECH {
+		publicName := "public.example.com"
+		priv, cfg, err := ech.NewConfig(1, []byte(publicName))
+		if err != nil {
+			log.Fatalf("ECHconfig: %v", err)
+		}
+
+		serverKey := tls.EncryptedClientHelloKey{Config: []byte(cfg), PrivateKey: priv.Bytes()}
+		tlsConf.EncryptedClientHelloKeys = []tls.EncryptedClientHelloKey{serverKey}
+
+		list, err := ech.ConfigList([]ech.Config{cfg})
+		if err != nil {
+			log.Fatalf("ECHconfig: %v", err)
+		}
+
+		echB64 := base64.StdEncoding.EncodeToString(list)
+		log.Printf("set DNS HTTPS record: ech=\"%s\"", echB64)
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -271,19 +294,17 @@ func main() {
 			}
 		}
 
-		var clientSubjects []string
+		var mtls = map[string]any{"enabled": false}
 		if len(r.TLS.PeerCertificates) > 0 {
-			clientSubjects = mapToString(r.TLS.PeerCertificates, func(v *x509.Certificate) string {
+			mtls["enabled"] = true
+			mtls["subject"] = mapToString(r.TLS.PeerCertificates, func(v *x509.Certificate) string {
 				return v.Subject.String()
 			})
 		}
 
 		resp := map[string]any{
 			"client_hello": hello,
-			"mTLS": map[string]any{
-				"enabled":  len(r.TLS.PeerCertificates) > 0,
-				"subjects": clientSubjects,
-			},
+			"mTLS":         mtls,
 			"negotiated": map[string]any{
 				"sni":          r.TLS.ServerName,
 				"alpn":         r.TLS.NegotiatedProtocol,
