@@ -54,7 +54,8 @@ type options struct {
 	Protocol    []string `long:"alpn" description:"List of application protocols" choice:"h2" choice:"http/1.1"`
 	TLSVersion  []string `long:"tls-ver" description:"List of TLS versions" choice:"1.0" choice:"1.1" choice:"1.2" choice:"1.3"`
 	CipherSuite []string `long:"cipher" description:"List of ciphersuites (TLS1.3 ciphersuites are not configurable)"`
-	EnableECH  bool     `long:"ech" description:"Enable Encrypted Client Hello for TLS1.3"`
+	EnableMTLS  bool     `long:"enable-mtls" description:"Enable mTLS for client certificate"`
+	EnableECH   bool     `long:"enable-ech" description:"Enable Encrypted Client Hello for TLS1.3"`
 	TLSCert     string   `long:"tls-crt" description:"TLS certificate file path"`
 	TLSKey      string   `long:"tls-key" description:"TLS key file path"`
 }
@@ -218,7 +219,6 @@ func main() {
 
 	tlsConf := &tls.Config{
 		Certificates: []tls.Certificate{mustSelfSignedCert()},
-		ClientAuth: tls.RequestClientCert,
 		GetConfigForClient: func(ch *tls.ClientHelloInfo) (*tls.Config, error) {
 			clientHelloStore.Store(connKey(ch.Conn), clientHelloInfo{
 				ServerName:        ch.ServerName,
@@ -256,6 +256,9 @@ func main() {
 		}
 		tlsConf.CipherSuites = suites
 	}
+    if opts.EnableMTLS {
+		tlsConf.ClientAuth = tls.RequestClientCert
+    }
 	if opts.EnableECH {
 		publicName := "public.example.com"
 		priv, cfg, err := ech.NewConfig(1, []byte(publicName))
@@ -264,7 +267,7 @@ func main() {
 		}
 
 		serverKey := tls.EncryptedClientHelloKey{Config: []byte(cfg), PrivateKey: priv.Bytes()}
-		tlsConf.EncryptedClientHelloKeys = []tls.EncryptedClientHelloKey{ serverKey }
+		tlsConf.EncryptedClientHelloKeys = []tls.EncryptedClientHelloKey{serverKey}
 
 		list, err := ech.ConfigList([]ech.Config{cfg})
 		if err != nil {
@@ -272,7 +275,7 @@ func main() {
 		}
 
 		echB64 := base64.StdEncoding.EncodeToString(list)
-		log.Printf("set DNS HTTPS record: ech=%s", echB64)
+		log.Printf("set DNS HTTPS record: ech=\"%s\"", echB64)
 	}
 
 	mux := http.NewServeMux()
