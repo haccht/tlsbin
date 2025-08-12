@@ -166,7 +166,7 @@ func toCipherSuiteName(id uint16) string {
 	}
 	name, ok := godicttls.DictCipherSuiteValueIndexed[id]
 	if !ok {
-		return fmt.Sprintf("Reserved or Unassigned (0x%04x)", id)
+		name = "Reserved or Unassigned"
 	}
 	return fmt.Sprintf("%s (0x%04x)", name, id)
 }
@@ -186,11 +186,11 @@ func toExtensionName(id uint16) string {
 	if isGREASE(id) {
 		return fmt.Sprintf("Reserved (GREASE) (0x%04x)", id)
 	}
-	n, ok := extTypes[id]
+	name, ok := extTypes[id]
 	if !ok {
-		n = fmt.Sprintf("0x%04x", id)
+		name = "Reserved or Unassigned"
 	}
-	return fmt.Sprintf("%s (0x%04x)", n, id)
+	return fmt.Sprintf("%s (0x%04x)", name, id)
 }
 
 func mapToString[T any](in []T, f func(T) string) []string {
