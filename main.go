@@ -85,62 +85,6 @@ func mustSelfSignedCert() tls.Certificate {
 	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: priv, Leaf: leaf}
 }
 
-func strToCipherSuite(v string) (uint16, error) {
-	switch v {
-	case "TLS_RSA_WITH_RC4_128_SHA":
-		return tls.TLS_RSA_WITH_RC4_128_SHA, nil
-	case "TLS_RSA_WITH_3DES_EDE_CBC_SHA":
-		return tls.TLS_RSA_WITH_3DES_EDE_CBC_SHA, nil
-	case "TLS_RSA_WITH_AES_128_CBC_SHA":
-		return tls.TLS_RSA_WITH_AES_128_CBC_SHA, nil
-	case "TLS_RSA_WITH_AES_256_CBC_SHA":
-		return tls.TLS_RSA_WITH_AES_256_CBC_SHA, nil
-	case "TLS_RSA_WITH_AES_128_CBC_SHA256":
-		return tls.TLS_RSA_WITH_AES_128_CBC_SHA256, nil
-	case "TLS_RSA_WITH_AES_128_GCM_SHA256":
-		return tls.TLS_RSA_WITH_AES_128_GCM_SHA256, nil
-	case "TLS_RSA_WITH_AES_256_GCM_SHA384":
-		return tls.TLS_RSA_WITH_AES_256_GCM_SHA384, nil
-	case "TLS_ECDHE_ECDSA_WITH_RC4_128_SHA":
-		return tls.TLS_ECDHE_ECDSA_WITH_RC4_128_SHA, nil
-	case "TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA":
-		return tls.TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA, nil
-	case "TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA":
-		return tls.TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA, nil
-	case "TLS_ECDHE_RSA_WITH_RC4_128_SHA":
-		return tls.TLS_ECDHE_RSA_WITH_RC4_128_SHA, nil
-	case "TLS_ECDHE_RSA_WITH_3DES_EDE_CBC_SHA":
-		return tls.TLS_ECDHE_RSA_WITH_3DES_EDE_CBC_SHA, nil
-	case "TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA":
-		return tls.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA, nil
-	case "TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA":
-		return tls.TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA, nil
-	case "TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256":
-		return tls.TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256, nil
-	case "TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256":
-		return tls.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256, nil
-	case "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256":
-		return tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256, nil
-	case "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256":
-		return tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256, nil
-	case "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384":
-		return tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384, nil
-	case "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384":
-		return tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384, nil
-	case "TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256":
-		return tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256, nil
-	case "TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256":
-		return tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256, nil
-	case "TLS_AES_128_GCM_SHA256":
-		return tls.TLS_AES_128_GCM_SHA256, nil
-	case "TLS_AES_256_GCM_SHA384":
-		return tls.TLS_AES_256_GCM_SHA384, nil
-	case "TLS_CHACHA20_POLY1305_SHA256":
-		return tls.TLS_CHACHA20_POLY1305_SHA256, nil
-	}
-	return 0, fmt.Errorf("unsupported ciphersuite %s", v)
-}
-
 func strToTLSVersion(v string) (uint16, error) {
 	switch v {
 	case "1.0":
@@ -153,6 +97,14 @@ func strToTLSVersion(v string) (uint16, error) {
 		return tls.VersionTLS13, nil
 	}
 	return 0, fmt.Errorf("unsupported TLS version %s", v)
+}
+
+func strToCipherSuite(v string) (uint16, error) {
+	idx, ok := godicttls.DictCipherSuiteNameIndexed[v]
+	if !ok {
+		return 0, fmt.Errorf("unsupported ciphersuite %s", v)
+	}
+	return idx, nil
 }
 
 func isGREASE(id uint16) bool {
