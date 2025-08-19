@@ -42,7 +42,7 @@ func genECHServerKey(id uint8, name string) (tls.EncryptedClientHelloKey, error)
 	fmt.Println("Add the following flags to the 'run' command to use this static key:")
 	fmt.Println("")
 	fmt.Printf("  --ech-key=\"%s\" \\\n", privB64)
-	fmt.Printf("  --ech-config-list=\"%s\"\n\n", listB64)
+	fmt.Printf("  --ech-config=\"%s\"\n\n", listB64)
 
 	fmt.Println("Add the following HTTPS record to your DNS for the public name:")
 	fmt.Printf("\n  %s. IN HTTPS 1 . ech=\"%s\"\n", name, listB64)

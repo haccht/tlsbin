@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"log"
 	"math/big"
-	"net"
 	"os"
 	"time"
 )
@@ -20,8 +19,6 @@ type GenCertOptions struct {
 	CACertPath string        `long:"ca-cert-path" description:"Path to the CA certificate" default:"ca.crt"`
 	CAKeyPath  string        `long:"ca-key-path" description:"Path to the CA private key" default:"ca.key"`
 	CommonName string        `long:"common-name" description:"Common Name for the certificate" default:"localhost"`
-	DNSNames   []string      `long:"dns-name" description:"DNS names for the certificate's SAN"`
-	IPAddrs    []string      `long:"ip-address" description:"IP addresses for the certificate's SAN"`
 	ValidFor   time.Duration `long:"valid-for" description:"Duration that certificate is valid for" default:"8760h"` // 1 year
 	CertPath   string        `long:"cert-path" description:"Output path for the certificate" default:"server.crt"`
 	KeyPath    string        `long:"key-path" description:"Output path for the private key" default:"server.key"`
@@ -61,16 +58,6 @@ func (o *GenCertOptions) Execute(args []string) error {
 
 	extKeyUsage := []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}
 
-	ipAddresses := make([]net.IP, len(o.IPAddrs))
-	for i, ipStr := range o.IPAddrs {
-		ipAddresses[i] = net.ParseIP(ipStr)
-	}
-	// ensure localhost is included if no other names are provided
-	dnsNames := o.DNSNames
-	if len(dnsNames) == 0 && len(ipAddresses) == 0 {
-		dnsNames = []string{"localhost"}
-	}
-
 	template := x509.Certificate{
 		SerialNumber: serial,
 		Subject: pkix.Name{
@@ -81,8 +68,6 @@ func (o *GenCertOptions) Execute(args []string) error {
 		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
 		ExtKeyUsage:           extKeyUsage,
 		BasicConstraintsValid: true,
-		DNSNames:              dnsNames,
-		IPAddresses:           ipAddresses,
 	}
 
 	derBytes, err := x509.CreateCertificate(rand.Reader, &template, caCert, &priv.PublicKey, caKey)
