@@ -1,0 +1,7 @@
+Successfully generated ECH key and config.
+------------------------------------------
+Add the following DNS record:
+localhost. IN HTTPS 1 . ech="AET+DQBAAQAgACCoqIWG6zV+H+IQUyTwzTNC5DHPMklU9V1/la+bqQeTIAAMAAEAAwABAAIAAQABGQlsb2NhbGhvc3QAAA=="
+------------------------------------------
+Use the following flags to run the server with this config:
+--ech-key="yoE+/fNaD3aXV0sRG+MmEF6TH9hOmmRtlrRDDUdwDtg=" --ech-config="AET+DQBAAQAgACCoqIWG6zV+H+IQUyTwzTNC5DHPMklU9V1/la+bqQeTIAAMAAEAAwABAAIAAQABGQlsb2NhbGhvc3QAAA=="

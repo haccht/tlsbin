@@ -24,15 +24,17 @@ import (
 	"github.com/haccht/tlsbin/internal/tlsutil"
 )
 
-// Options holds the command-line options
-type Options struct {
+// RunOptions holds the command-line options for the run command
+type RunOptions struct {
 	Addr        string   `short:"a" long:"addr" description:"Server address" default:"127.0.0.1:8080"`
 	Protocol    []string `long:"alpn" description:"List of application protocols" choice:"h2" choice:"http/1.1"`
 	TLSVersion  []string `long:"tls-ver" description:"List of TLS versions" choice:"1.0" choice:"1.1" choice:"1.2" choice:"1.3"`
 	CipherSuite []string `long:"cipher" description:"List of ciphersuites (TLS1.3 ciphersuites are not configurable)"`
 	EnableMTLS  bool     `long:"enable-mtls" description:"Enable mTLS for client certificate"`
-	EnableECH   bool     `long:"enable-ech" description:"Enable Encrypted Client Hello for TLS1.3"`
-	TLSCert     string   `long:"tls-crt" description:"TLS certificate file path"`
+	EnableECH     bool     `long:"enable-ech" description:"Enable Encrypted Client Hello for TLS1.3"`
+	EchKey        string   `long:"ech-key" description:"Base64-encoded private key for ECH"`
+	EchConfigList string   `long:"ech-config-list" description:"Base64-encoded ECH configuration list"`
+	TLSCert       string   `long:"tls-crt" description:"TLS certificate file path"`
 	TLSKey      string   `long:"tls-key" description:"TLS key file path"`
 	ClientCA    string   `long:"tls-ca" description:"Client CA certificate file path for mTLS"`
 }
@@ -57,13 +59,20 @@ func connKey(c net.Conn) string {
 
 // Server is the main server struct
 type Server struct {
-	opts             Options
+	opts             RunOptions
 	clientHelloStore sync.Map
 }
 
 // New creates a new server with the given options.
-func New(opts Options) *Server {
+func New(opts RunOptions) *Server {
 	return &Server{opts: opts}
+}
+
+// Execute runs the server command.
+func (o *RunOptions) Execute(args []string) error {
+	s := New(*o)
+	s.ListenAndServe()
+	return nil
 }
 
 // ListenAndServe starts the TLS server.
@@ -133,22 +142,41 @@ func (s *Server) ListenAndServe() {
 		}
 	}
 	if s.opts.EnableECH {
-		publicName := "public.example.com"
-		priv, cfg, err := ech.NewConfig(1, []byte(publicName))
-		if err != nil {
-			log.Fatalf("ECHconfig: %v", err)
-		}
+		var serverKey tls.EncryptedClientHelloKey
+		if s.opts.EchKey != "" && s.opts.EchConfigList != "" {
+			// Use static key provided by user
+			keyBytes, err := base64.StdEncoding.DecodeString(s.opts.EchKey)
+			if err != nil {
+				log.Fatalf("failed to decode ech-key: %v", err)
+			}
+			configBytes, err := base64.StdEncoding.DecodeString(s.opts.EchConfigList)
+			if err != nil {
+				log.Fatalf("failed to decode ech-config-list: %v", err)
+			}
+			serverKey = tls.EncryptedClientHelloKey{
+				PrivateKey: keyBytes,
+				Config:     configBytes,
+			}
+			log.Println("Using static ECH key and config from flags.")
+		} else {
+			// Generate temporary key
+			log.Println("WARNING: Generating temporary ECH key. Use 'gen-ech' subcommand for a static key.")
+			publicName := "localhost" // Public name is not configurable for temporary keys
+			priv, cfg, err := ech.NewConfig(1, []byte(publicName))
+			if err != nil {
+				log.Fatalf("ECHconfig: %v", err)
+			}
 
-		serverKey := tls.EncryptedClientHelloKey{Config: []byte(cfg), PrivateKey: priv.Bytes()}
+			list, err := ech.ConfigList([]ech.Config{cfg})
+			if err != nil {
+				log.Fatalf("ECHconfig: %v", err)
+			}
+			echB64 := base64.StdEncoding.EncodeToString(list)
+			log.Printf("Temporary DNS HTTPS record: ech=\"%s\"", echB64)
+
+			serverKey = tls.EncryptedClientHelloKey{Config: list, PrivateKey: priv.Bytes()}
+		}
 		tlsConf.EncryptedClientHelloKeys = []tls.EncryptedClientHelloKey{serverKey}
-
-		list, err := ech.ConfigList([]ech.Config{cfg})
-		if err != nil {
-			log.Fatalf("ECHconfig: %v", err)
-		}
-
-		echB64 := base64.StdEncoding.EncodeToString(list)
-		log.Printf("set DNS HTTPS record: ech=\"%s\"", echB64)
 	}
 
 	mux := http.NewServeMux()

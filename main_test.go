@@ -15,11 +15,10 @@ import (
 func TestMain(m *testing.M) {
 	// Run the server in the background
 	go func() {
-		opts := server.Options{
+		opts := server.RunOptions{
 			Addr: "127.0.0.1:8888",
 		}
-		s := server.New(opts)
-		s.ListenAndServe()
+		opts.Execute(nil)
 	}()
 	// wait for server to start
 	time.Sleep(1 * time.Second)
