@@ -12,7 +12,7 @@ import (
 // GenEchOptions holds the options for the gen-ech command.
 type GenEchOptions struct {
 	PublicName string `long:"public-name" description:"Public name for ECH" default:"localhost"`
-	ConfigID   uint8  `long:"config-id" description:"Config ID of ECH" default:"1"` 
+	ConfigID   uint8  `long:"config-id" description:"Config ID of ECH" default:"1"`
 }
 
 // Execute runs the gen-ech command.
@@ -44,8 +44,9 @@ func genECHServerKey(id uint8, name string) (tls.EncryptedClientHelloKey, error)
 	fmt.Printf("  --ech-key=\"%s\" \\\n", privB64)
 	fmt.Printf("  --ech-config=\"%s\"\n\n", listB64)
 
-	fmt.Println("Add the following HTTPS record to your DNS for the public name:")
-	fmt.Printf("\n  %s. IN HTTPS 1 . ech=\"%s\"\n", name, listB64)
+	fmt.Println("Add the following HTTPS record to your zone for the backend FQDN:")
+	fmt.Println("")
+	fmt.Printf("  IN HTTPS 1 . ech=\"%s\"\n", listB64)
 	fmt.Println("---------------------------------")
 
 	key := tls.EncryptedClientHelloKey{Config: list, PrivateKey: priv.Bytes()}

@@ -215,9 +215,9 @@ Add the following flags to the 'run' command to use this static key:
   --ech-key="..." \
   --ech-config="..."
 
-Add the following HTTPS record to your DNS for the public name:
+Add the following HTTPS record to your zone for the backend FQDN:
 
-  ech.example.com. IN HTTPS 1 . ech="..."
+  HTTPS 1 . ech="..."
 ---------------------------------
 ```
 You can then pass the generated `--ech-key` and `--ech-config` values to the `run` command to start the server with a stable ECH configuration.
