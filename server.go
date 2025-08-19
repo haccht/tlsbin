@@ -1,4 +1,4 @@
-package server
+package main
 
 import (
 	"context"
@@ -21,7 +21,6 @@ import (
 	"time"
 
 	"github.com/c2FmZQ/ech"
-	"github.com/haccht/tlsbin/internal/tlsutil"
 )
 
 // RunOptions holds the command-line options for the run command
@@ -94,10 +93,10 @@ func (s *Server) ListenAndServe() {
 			s.clientHelloStore.Store(connKey(ch.Conn), clientHelloInfo{
 				ServerName:        ch.ServerName,
 				SupportedProtos:   ch.SupportedProtos,
-				CipherSuites:      tlsutil.MapToString(ch.CipherSuites, tlsutil.ToCipherSuiteName),
-				SupportedVersions: tlsutil.MapToString(ch.SupportedVersions, tlsutil.ToTLSVersionName),
-				SignatureSchemes:  tlsutil.MapToString(ch.SignatureSchemes, tlsutil.ToSignatureSchemeName),
-				Extensions:        tlsutil.MapToString(ch.Extensions, tlsutil.ToExtensionName),
+				CipherSuites:      mapToString(ch.CipherSuites, toCipherSuiteName),
+				SupportedVersions: mapToString(ch.SupportedVersions, toTLSVersionName),
+				SignatureSchemes:  mapToString(ch.SignatureSchemes, toSignatureSchemeName),
+				Extensions:        mapToString(ch.Extensions, toExtensionName),
 			})
 			return nil, nil
 		},
@@ -107,11 +106,11 @@ func (s *Server) ListenAndServe() {
 	}
 	if len(s.opts.TLSVersion) > 0 {
 		var err error
-		tlsConf.MinVersion, err = tlsutil.StrToTLSVersion(slices.Min(s.opts.TLSVersion))
+		tlsConf.MinVersion, err = strToTLSVersion(slices.Min(s.opts.TLSVersion))
 		if err != nil {
 			log.Fatal(err)
 		}
-		tlsConf.MaxVersion, err = tlsutil.StrToTLSVersion(slices.Max(s.opts.TLSVersion))
+		tlsConf.MaxVersion, err = strToTLSVersion(slices.Max(s.opts.TLSVersion))
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -119,7 +118,7 @@ func (s *Server) ListenAndServe() {
 	if len(s.opts.CipherSuite) > 0 {
 		suites := make([]uint16, len(s.opts.CipherSuite))
 		for i, v := range s.opts.CipherSuite {
-			c, err := tlsutil.StrToCipherSuite(v)
+			c, err := strToCipherSuite(v)
 			if err != nil {
 				log.Fatal(err)
 			}
@@ -218,7 +217,7 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	var mtls = map[string]any{"enabled": false}
 	if len(r.TLS.PeerCertificates) > 0 {
 		mtls["enabled"] = true
-		mtls["subject"] = tlsutil.MapToString(r.TLS.PeerCertificates, func(v *x509.Certificate) string {
+		mtls["subject"] = mapToString(r.TLS.PeerCertificates, func(v *x509.Certificate) string {
 			return v.Subject.String()
 		})
 	}

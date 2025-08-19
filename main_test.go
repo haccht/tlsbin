@@ -8,14 +8,12 @@ import (
 	"os"
 	"testing"
 	"time"
-
-	"github.com/haccht/tlsbin/internal/server"
 )
 
 func TestMain(m *testing.M) {
 	// Run the server in the background
 	go func() {
-		opts := server.RunOptions{
+		opts := RunOptions{
 			Addr: "127.0.0.1:8888",
 		}
 		opts.Execute(nil)

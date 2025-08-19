@@ -1,4 +1,4 @@
-package tlsutil
+package main
 
 import (
 	"crypto/tls"
@@ -8,18 +8,16 @@ import (
 )
 
 var (
-	// ExtTypes is a map of TLS extension IDs to their names.
-	ExtTypes = godicttls.DictExtTypeValueIndexed
+	extTypes = godicttls.DictExtTypeValueIndexed
 )
 
 func init() {
 	// add extension types which is missing in godicttls
-	ExtTypes[0xfe0d] = "encrypted_client_hello"
-	ExtTypes[0xff01] = "renegotiation_info"
+	extTypes[0xfe0d] = "encrypted_client_hello"
+	extTypes[0xff01] = "renegotiation_info"
 }
 
-// StrToTLSVersion converts a string representation of a TLS version to its uint16 ID.
-func StrToTLSVersion(v string) (uint16, error) {
+func strToTLSVersion(v string) (uint16, error) {
 	switch v {
 	case "1.0":
 		return tls.VersionTLS10, nil
@@ -33,8 +31,7 @@ func StrToTLSVersion(v string) (uint16, error) {
 	return 0, fmt.Errorf("unsupported TLS version %s", v)
 }
 
-// StrToCipherSuite converts a string representation of a cipher suite to its uint16 ID.
-func StrToCipherSuite(v string) (uint16, error) {
+func strToCipherSuite(v string) (uint16, error) {
 	idx, ok := godicttls.DictCipherSuiteNameIndexed[v]
 	if !ok {
 		return 0, fmt.Errorf("unsupported ciphersuite %s", v)
@@ -47,8 +44,7 @@ func isGREASE(id uint16) bool {
 	return b == byte(id) && (b&0x0f) == 0x0a
 }
 
-// ToCipherSuiteName converts a cipher suite ID to its string representation.
-func ToCipherSuiteName(id uint16) string {
+func toCipherSuiteName(id uint16) string {
 	if isGREASE(id) {
 		return fmt.Sprintf("Reserved (GREASE) (0x%04x)", id)
 	}
@@ -59,33 +55,29 @@ func ToCipherSuiteName(id uint16) string {
 	return fmt.Sprintf("%s (0x%04x)", name, id)
 }
 
-// ToTLSVersionName converts a TLS version ID to its string representation.
-func ToTLSVersionName(id uint16) string {
+func toTLSVersionName(id uint16) string {
 	if isGREASE(id) {
 		return fmt.Sprintf("Reserved (GREASE) (0x%04x)", id)
 	}
 	return fmt.Sprintf("%s (0x%04x)", tls.VersionName(id), id)
 }
 
-// ToSignatureSchemeName converts a signature scheme to its string representation.
-func ToSignatureSchemeName(v tls.SignatureScheme) string {
+func toSignatureSchemeName(v tls.SignatureScheme) string {
 	return v.String()
 }
 
-// ToExtensionName converts a TLS extension ID to its string representation.
-func ToExtensionName(id uint16) string {
+func toExtensionName(id uint16) string {
 	if isGREASE(id) {
 		return fmt.Sprintf("Reserved (GREASE) (0x%04x)", id)
 	}
-	name, ok := ExtTypes[id]
+	name, ok := extTypes[id]
 	if !ok {
 		name = "Reserved or Unassigned"
 	}
 	return fmt.Sprintf("%s (0x%04x)", name, id)
 }
 
-// MapToString applies a function to each element of a slice and returns a new slice of strings.
-func MapToString[T any](in []T, f func(T) string) []string {
+func mapToString[T any](in []T, f func(T) string) []string {
 	out := make([]string, len(in))
 	for i, v := range in {
 		out[i] = f(v)
