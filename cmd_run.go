@@ -179,7 +179,7 @@ func (s *Server) ListenAndServe() {
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/", s.handleRequest)
+	mux.HandleFunc("/", s.handleInspectRequest)
 
 	srv := &http.Server{
 		Addr:      s.opts.Addr,
@@ -199,7 +199,7 @@ func (s *Server) ListenAndServe() {
 	log.Fatal(srv.ListenAndServeTLS("", ""))
 }
 
-func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleInspectRequest(w http.ResponseWriter, r *http.Request) {
 	if r.TLS == nil {
 		http.Error(w, "TLS required", http.StatusBadRequest)
 		return
