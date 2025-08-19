@@ -1,4 +1,4 @@
-package main
+package cmd
 
 import (
 	"crypto/ecdsa"
@@ -19,8 +19,8 @@ type GenCAOptions struct {
 	CommonName   string        `long:"common-name" description:"Common Name for the CA" default:"tlsbin-ca"`
 	Organization string        `long:"org" description:"Organization for the CA" default:"tlsbin"`
 	ValidFor     time.Duration `long:"valid-for" description:"Duration that certificate is valid for" default:"8760h"` // 1 year
-	OutCert      string        `long:"out-cert" description:"Output path for the CA certificate" default:"ca.crt"`
-	OutKey       string        `long:"out-key" description:"Output path for the CA private key" default:"ca.key"`
+	CertPath     string        `long:"cert-path" description:"Output path for the CA certificate" default:"ca.crt"`
+	KeyPath      string        `long:"key-path" description:"Output path for the CA private key" default:"ca.key"`
 }
 
 // Execute runs the gen-ca command.
@@ -52,19 +52,17 @@ func (o *GenCAOptions) Execute(args []string) error {
 		return fmt.Errorf("failed to create certificate: %w", err)
 	}
 
-	// Write certificate to file
-	certOut, err := os.Create(o.OutCert)
+	certOut, err := os.Create(o.CertPath)
 	if err != nil {
-		return fmt.Errorf("failed to open %s for writing: %w", o.OutCert, err)
+		return fmt.Errorf("failed to open %s for writing: %w", o.CertPath, err)
 	}
 	pem.Encode(certOut, &pem.Block{Type: "CERTIFICATE", Bytes: derBytes})
 	certOut.Close()
-	log.Printf("wrote CA certificate to %s\n", o.OutCert)
+	log.Printf("wrote CA certificate to %s\n", o.CertPath)
 
-	// Write key to file
-	keyOut, err := os.OpenFile(o.OutKey, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	keyOut, err := os.OpenFile(o.KeyPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
 	if err != nil {
-		return fmt.Errorf("failed to open %s for writing: %w", o.OutKey, err)
+		return fmt.Errorf("failed to open %s for writing: %w", o.KeyPath, err)
 	}
 	privBytes, err := x509.MarshalPKCS8PrivateKey(priv)
 	if err != nil {
@@ -72,7 +70,7 @@ func (o *GenCAOptions) Execute(args []string) error {
 	}
 	pem.Encode(keyOut, &pem.Block{Type: "PRIVATE KEY", Bytes: privBytes})
 	keyOut.Close()
-	log.Printf("wrote CA private key to %s\n", o.OutKey)
+	log.Printf("wrote CA private key to %s\n", o.KeyPath)
 
 	return nil
 }
