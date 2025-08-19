@@ -1,45 +1,56 @@
 # tlsbin
 
-`tlsbin` is a simple tool for inspecting and debugging TLS (Transport Layer Security) negotiations.  
-This server application allows you to easily observe the details of the TLS handshake between a client and the server.  
-It is especially useful for testing supported TLS versions, cipher suites, ALPN protocols, and certificate configurations.
+`tlsbin` is a simple tool for inspecting and debugging TLS (Transport Layer Security) negotiations.
+This application provides a TLS server that allows you to easily observe the details of the TLS handshake from any client.
+It is especially useful for testing supported TLS versions, cipher suites, ALPN protocols, ECH (Encrypted Client Hello), and mTLS configurations.
+
+`tlsbin` also includes helper commands to generate the necessary cryptographic materials (CAs, certificates, ECH keys) for setting up advanced TLS test scenarios.
 
 ## Features
 
-- Start a TLS server with customizable address, protocol, and cipher settings
-- View detailed TLS handshake dumps via HTTP requests
-- Inspect Client Hello, negotiated protocol, cipher suite, and more
-- Supports multiple TLS versions and ALPN protocols
-- Easily test mTLS setups (client certificate authentication)
+- **TLS Inspection Server**: Start a TLS server with customizable address, protocol, and cipher settings.
+- **Detailed Handshake Information**: View detailed TLS handshake dumps (including Client Hello) via an HTTP request.
+- **Certificate Generation**: Built-in commands to create your own Certificate Authority (CA) and sign server/client certificates.
+- **ECH Support**: Generate static ECH (Encrypted Client Hello) keys and configure the server to use them.
+- **mTLS Testing**: Easily test mTLS setups by generating CAs and client certificates and configuring the server to require them.
+
+## Installation
+```
+go install github.com/haccht/tlsbin@latest
+```
 
 ## Usage
+
+`tlsbin` uses a subcommand structure.
+
 ```
-$ tlsbin -h
+$ tlsbin --help
 Usage:
-  main [OPTIONS]
+  tlsbin [OPTIONS] <gen-ech|gen-ca|gen-cert|run>
 
-Application Options:
-  -a, --addr=                     Server address (default: 127.0.0.1:8080)
-      --alpn=[h2|http/1.1]        List of application protocols
-      --tls-ver=[1.0|1.1|1.2|1.3] List of TLS versions
-      --cipher=                   List of ciphersuites (TLS1.3 ciphersuites are not configurable)
-      --tls-crt=                  TLS certificate file path
-      --tls-key=                  TLS key file path
-
-Help Options:
-  -h, --help                      Show this help message
+Available commands:
+  gen-ca    Generate a new CA certificate and key for mTLS
+  gen-cert  Generate a new certificate signed by a CA for mTLS
+  gen-ech   Generate a new key and config for ECH
+  run       Run the TLS inspection server
 ```
 
+### `run` command
 
-To start the TLS server, simply execute the binary:
-```
-$ tlsbin
-2025/08/11 13:34:00 start listening on https://127.0.0.1:8080
-```
+This command starts the main TLS inspection server. If no subcommand is specified, `run` is used by default.
 
-Send an HTTP request to the server to get a detailed dump of the TLS negotiation:
 ```
-$ curl -s -k https://localhost:8080
+$ tlsbin run [OPTIONS]
+```
+The server will start, and you can send a request to it (e.g., with `curl`) to receive a JSON dump of the client's TLS handshake information.
+
+**Example:**
+```
+# Start the server
+$ tlsbin run
+
+# In another terminal, make a request
+$ curl -s -k https://127.0.0.1:8080 | jq .
 {
   "client_hello": {
     "sni": "localhost",
@@ -142,3 +153,71 @@ $ curl -s -k https://localhost:8080
   }
 }
 ```
+
+**Common `run` options:**
+
+```
+      -a, --addr=                         Server address (default: 127.0.0.1:8080)
+          --tls-crt=                      TLS certificate file path
+          --tls-key=                      TLS key file path
+          --tls-min-ver=[1.0|1.1|1.2|1.3] Minimum TLS version
+          --tls-max-ver=[1.0|1.1|1.2|1.3] Maximum TLS version
+          --alpn=[http/1.1|h2]            List of application protocols
+          --cipher=                       List of ciphersuites (TLS1.3 ciphersuites are not configurable)
+          --enable-mtls                   Enable mTLS
+          --mtls-ca=                      mTLS Client CA certificate file path
+          --enable-ech                    Enable ECH (Encrypted Client Hello)
+          --ech-key=                      Base64-encoded ECH private key
+          --ech-config=                   Base64-encoded ECH configuration list
+```
+
+---
+
+### Certificate and Key Generation for mTLS
+
+#### 1. `gen-ca`
+
+Create a new root Certificate Authority (CA) for mTLS.
+
+```
+$ tlsbin gen-ca --common-name="mTLS CA"
+2025/08/18 21:30:00 wrote CA certificate to ca.crt
+2025/08/18 21:30:00 wrote CA private key to ca.key
+```
+This creates `ca.crt` and `ca.key`.
+
+#### 2. `gen-cert`
+
+Create a new certificate signed by your CA for mTLS.
+```
+$ tlsbin gen-cert --common-name="my-client" --cert-path=client.crt --key-path=client.key
+2025/08/18 21:32:00 wrote certificate to client.crt
+2025/08/18 21:32:00 wrote private key to client.key
+```
+This uses `ca.crt` and `ca.key` by default to sign the new certificate.
+
+---
+
+### ECH (Encrypted Client Hello)
+
+#### `gen-ech`
+
+Generate a static ECH key pair and the corresponding DNS record info.
+
+```
+$ tlsbin gen-ech --public-name="ech.example.com"
+Generating new ECH key pair...
+
+Successfully generated ECH keys.
+---------------------------------
+Add the following flags to the 'run' command to use this static key:
+
+  --ech-key="..." \
+  --ech-config="..."
+
+Add the following HTTPS record to your DNS for the public name:
+
+  ech.example.com. IN HTTPS 1 . ech="..."
+---------------------------------
+```
+You can then pass the generated `--ech-key` and `--ech-config` values to the `run` command to start the server with a stable ECH configuration.
