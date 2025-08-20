@@ -37,7 +37,7 @@ Available commands:
 
 ### `run` command
 
-This command starts the main TLS inspection server. If no subcommand is specified, `run` is used by default.
+This command starts the main TLS inspection server.
 
 ```
 $ tlsbin run [OPTIONS]
