@@ -6,12 +6,12 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/base64"
 	"encoding/pem"
+	"fmt"
 	"log"
 	"math/big"
 	"os"
-	"encoding/base64"
-	"fmt"
 	"time"
 
 	"github.com/c2FmZQ/ech"
@@ -26,24 +26,24 @@ type ConfigCmd struct {
 // ConfigECHCmd holds the options for the 'config ech' command.
 type ConfigECHCmd struct {
 	ConfigID   uint8  `long:"config-id" description:"ConfigID for ECH" default:"1"`
-	PublicName string `long:"public-name" description:"PublicName for ECH" default:"localhost"`
+	PublicName string `long:"public-name" description:"PublicName for ECH" required:"true"`
 }
 
 // Execute runs the gen-ech command.
 func (o *ConfigECHCmd) Execute(args []string) error {
 	log.Println("Generating a new ECH key pair...")
 
-	priv, cfg, err := ech.NewConfig(o.ConfigID, []byte(o.PublicName))
+	key, cfg, err := ech.NewConfig(o.ConfigID, []byte(o.PublicName))
 	if err != nil {
 		return fmt.Errorf("Failed to generate ECH config: %v", err)
 	}
+	keyB64 := base64.StdEncoding.EncodeToString(key.Bytes())
+	cfgB64 := base64.StdEncoding.EncodeToString([]byte(cfg))
 
 	list, err := ech.ConfigList([]ech.Config{cfg})
 	if err != nil {
 		return fmt.Errorf("Failed to create ECH config list: %v", err)
 	}
-
-	privB64 := base64.StdEncoding.EncodeToString(priv.Bytes())
 	listB64 := base64.StdEncoding.EncodeToString(list)
 
 	fmt.Println("")
@@ -51,8 +51,8 @@ func (o *ConfigECHCmd) Execute(args []string) error {
 	fmt.Println("---------------------------------")
 	fmt.Println("Add the following flags to the 'server' command to use this static key:")
 	fmt.Println("")
-	fmt.Printf("  --ech-key=\"%s\" \\\n", privB64)
-	fmt.Printf("  --ech-config=\"%s\"\n\n", listB64)
+	fmt.Printf("  --ech-key=\"%s\" \\\n", keyB64)
+	fmt.Printf("  --ech-cfg=\"%s\"\n\n", cfgB64)
 
 	fmt.Println("Add the following HTTPS record to your zone for the backend FQDN:")
 	fmt.Println("")
@@ -64,11 +64,11 @@ func (o *ConfigECHCmd) Execute(args []string) error {
 
 // ConfigMTLSCmd holds the options for the 'config mtls' command.
 type ConfigMTLSCmd struct {
-	CommonName     string        `long:"cn" description:"Common Name for the CA" default:"tlsbin.net"`
-	Organization   string        `long:"org" description:"Organization for the CA" default:"tlsbin"`
-	ValidFor       time.Duration `long:"valid-for" description:"Duration the CA certificate is valid for" default:"8760h"` // 1 year
-	CACertPath     string        `long:"ca-cert" description:"Path to the CA certificate" default:"ca.crt"`
-	CAKeyPath      string        `long:"ca-key" description:"Path to the CA private key" default:"ca.key"`
+	CommonName   string        `long:"cn" description:"Common Name for the CA" default:"tlsbin.net"`
+	Organization string        `long:"org" description:"Organization for the CA" default:"tlsbin"`
+	ValidFor     time.Duration `long:"valid-for" description:"Duration the CA certificate is valid for" default:"8760h"` // 1 year
+	CACertPath   string        `long:"ca-cert" description:"Path to the CA certificate" default:"ca.crt"`
+	CAKeyPath    string        `long:"ca-key" description:"Path to the CA private key" default:"ca.key"`
 }
 
 func (o *ConfigMTLSCmd) Execute(args []string) error {
@@ -126,7 +126,7 @@ func (o *ConfigMTLSCmd) Execute(args []string) error {
 	fmt.Println("")
 	fmt.Println("$ openssl genrsa -out client.key 2048")
 	fmt.Println("$ openssl req -new -key client.key -out client.csr -subj 'CN=client.tlsbin.net'")
-	fmt.Printf( "$ openssl x509 -req -CA %s -CAkey %s -CAcreateserial \\\n", o.CACertPath, o.CAKeyPath)
+	fmt.Printf("$ openssl x509 -req -CA %s -CAkey %s -CAcreateserial \\\n", o.CACertPath, o.CAKeyPath)
 	fmt.Println("    -in client.csr -out client.crt -days 365 -sha256 -extfile <(echo \"extendedKeyUsage = clientAuth\")")
 	fmt.Println("---------------------------------")
 

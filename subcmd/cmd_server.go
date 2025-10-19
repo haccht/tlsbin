@@ -33,7 +33,7 @@ type ServerCmd struct {
 	MTLSClientCA  string   `long:"mtls-ca" description:"mTLS Client CA certificate file path"`
 	ECHEnabled    bool     `long:"ech-enabled" description:"Enable ECH (Encrypted Client Hello)"`
 	EchKey        string   `long:"ech-key" description:"Base64-encoded ECH private key"`
-	EchConfig     string   `long:"ech-config" description:"Base64-encoded ECH configuration list"`
+	EchConfig     string   `long:"ech-cfg" description:"Base64-encoded ECH configuration"`
 }
 
 type clientHelloInfo struct {
@@ -136,9 +136,9 @@ func (s *Server) handleInspectRequest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-    enc := json.NewEncoder(w)
-    enc.SetIndent("", "  ")
-    enc.Encode(resp)
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	enc.Encode(resp)
 }
 
 // ListenAndServe starts the TLS server.
@@ -212,7 +212,6 @@ func (s *Server) ListenAndServe() {
 		}
 		caCertPool := x509.NewCertPool()
 		caCertPool.AppendCertsFromPEM(caCert)
-
 		tlsConf.ClientCAs = caCertPool
 
 		switch s.opts.MTLSAuth {
@@ -228,16 +227,17 @@ func (s *Server) ListenAndServe() {
 			log.Fatalf("--ech-key and --ech-config is required to enable ECH")
 		}
 
-		keyBytes, err := base64.StdEncoding.DecodeString(s.opts.EchKey)
+		key, err := base64.StdEncoding.DecodeString(s.opts.EchKey)
 		if err != nil {
 			log.Fatalf("failed to decode ech-key: %v", err)
 		}
-		configBytes, err := base64.StdEncoding.DecodeString(s.opts.EchConfig)
+
+		cfg, err := base64.StdEncoding.DecodeString(s.opts.EchConfig)
 		if err != nil {
 			log.Fatalf("failed to decode ech-config: %v", err)
 		}
 
-		serverKey := tls.EncryptedClientHelloKey{PrivateKey: keyBytes, Config: configBytes}
+		serverKey := tls.EncryptedClientHelloKey{PrivateKey: key, Config: cfg}
 		tlsConf.EncryptedClientHelloKeys = []tls.EncryptedClientHelloKey{serverKey}
 	}
 
