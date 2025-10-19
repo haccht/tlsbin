@@ -1,4 +1,4 @@
-package cmd
+package subcmd
 
 import (
 	"context"
@@ -20,8 +20,8 @@ import (
 	"time"
 )
 
-// RunOptions holds the command-line options for the run command
-type RunOptions struct {
+// ServerCmd holds the command-line options for the server command
+type ServerCmd struct {
 	Addr          string   `short:"a" long:"addr" description:"Server address" default:"127.0.0.1:8080"`
 	TLSCert       string   `long:"tls-crt" description:"TLS certificate file path"`
 	TLSKey        string   `long:"tls-key" description:"TLS key file path"`
@@ -29,9 +29,9 @@ type RunOptions struct {
 	TLSMaxVersion string   `long:"tls-max-ver" description:"Maximum TLS version" choice:"1.0" choice:"1.1" choice:"1.2" choice:"1.3"`
 	Protocols     []string `long:"alpn" description:"List of application protocols" choice:"http/1.1" choice:"h2"`
 	CipherSuites  []string `long:"cipher" description:"List of ciphersuites (TLS1.3 ciphersuites are not configurable)"`
-	EnableMTLS    bool     `long:"enable-mtls" description:"Enable mTLS"`
+	MTLSAuth      string   `long:"mtls-auth" default:"off" choice:"off" choice:"request" choice:"require" description:"Client cert auth mode"`
 	MTLSClientCA  string   `long:"mtls-ca" description:"mTLS Client CA certificate file path"`
-	EnableECH     bool     `long:"enable-ech" description:"Enable ECH (Encrypted Client Hello)"`
+	ECHEnabled    bool     `long:"ech-enabled" description:"Enable ECH (Encrypted Client Hello)"`
 	EchKey        string   `long:"ech-key" description:"Base64-encoded ECH private key"`
 	EchConfig     string   `long:"ech-config" description:"Base64-encoded ECH configuration list"`
 }
@@ -56,17 +56,17 @@ func connKey(c net.Conn) string {
 
 // Server is the main server struct
 type Server struct {
-	opts     RunOptions
+	opts     ServerCmd
 	chiStore sync.Map
 }
 
 // New creates a new server with the given options.
-func New(opts RunOptions) *Server {
+func New(opts ServerCmd) *Server {
 	return &Server{opts: opts}
 }
 
 // Execute runs the server command.
-func (o *RunOptions) Execute(args []string) error {
+func (o *ServerCmd) Execute(args []string) error {
 	s := New(*o)
 	s.ListenAndServe()
 	return nil
@@ -115,7 +115,7 @@ func (s *Server) handleInspectRequest(w http.ResponseWriter, r *http.Request) {
 	var mtls = map[string]any{"enabled": false}
 	if len(r.TLS.PeerCertificates) > 0 {
 		mtls["enabled"] = true
-		mtls["subject"] = mapToString(r.TLS.PeerCertificates, func(v *x509.Certificate) string {
+		mtls["subject"] = mapSliceToString(r.TLS.PeerCertificates, func(v *x509.Certificate) string {
 			return v.Subject.String()
 		})
 	}
@@ -146,10 +146,10 @@ func (s *Server) ListenAndServe() {
 			s.chiStore.Store(connKey(ch.Conn), clientHelloInfo{
 				ServerName:        ch.ServerName,
 				SupportedProtos:   ch.SupportedProtos,
-				CipherSuites:      mapToString(ch.CipherSuites, toCipherSuiteName),
-				SupportedVersions: mapToString(ch.SupportedVersions, toTLSVersionName),
-				SignatureSchemes:  mapToString(ch.SignatureSchemes, toSignatureSchemeName),
-				Extensions:        mapToString(ch.Extensions, toExtensionName),
+				CipherSuites:      mapSliceToString(ch.CipherSuites, toCipherSuiteName),
+				SupportedVersions: mapSliceToString(ch.SupportedVersions, toTLSVersionName),
+				SignatureSchemes:  mapSliceToString(ch.SignatureSchemes, toSignatureSchemeName),
+				Extensions:        mapSliceToString(ch.Extensions, toExtensionName),
 			})
 			return nil, nil
 		},
@@ -163,6 +163,7 @@ func (s *Server) ListenAndServe() {
 
 		tlsConf.Certificates = []tls.Certificate{cert}
 	} else {
+		log.Printf("generating a self signed certificate for this server")
 		tlsConf.Certificates = []tls.Certificate{mustSelfSignedCert()}
 	}
 
@@ -171,7 +172,6 @@ func (s *Server) ListenAndServe() {
 		if err != nil {
 			log.Fatalf("failed to set minimum tls version: %v", err)
 		}
-
 		tlsConf.MinVersion = verion
 	}
 
@@ -180,7 +180,6 @@ func (s *Server) ListenAndServe() {
 		if err != nil {
 			log.Fatalf("failed to set maximum tls version: %v", err)
 		}
-
 		tlsConf.MaxVersion = verion
 	}
 
@@ -197,11 +196,10 @@ func (s *Server) ListenAndServe() {
 			}
 			suites[i] = c
 		}
-
 		tlsConf.CipherSuites = suites
 	}
 
-	if s.opts.EnableMTLS {
+	if s.opts.MTLSAuth != "off" {
 		if s.opts.MTLSClientCA != "" {
 			caCert, err := os.ReadFile(s.opts.MTLSClientCA)
 			if err != nil {
@@ -217,8 +215,7 @@ func (s *Server) ListenAndServe() {
 		}
 	}
 
-	if s.opts.EnableECH {
-		var serverKey tls.EncryptedClientHelloKey
+	if s.opts.ECHEnabled {
 		if s.opts.EchKey != "" && s.opts.EchConfig != "" {
 			keyBytes, err := base64.StdEncoding.DecodeString(s.opts.EchKey)
 			if err != nil {
@@ -229,20 +226,12 @@ func (s *Server) ListenAndServe() {
 				log.Fatalf("failed to decode ech-config: %v", err)
 			}
 
-			serverKey = tls.EncryptedClientHelloKey{PrivateKey: keyBytes, Config: configBytes}
+			serverKey := tls.EncryptedClientHelloKey{PrivateKey: keyBytes, Config: configBytes}
+			tlsConf.EncryptedClientHelloKeys = []tls.EncryptedClientHelloKey{serverKey}
 		} else {
-			log.Println("WARNING: Generating temporary ECH key. Use 'gen-ech' subcommand for a static key.")
-
-			publicName := "localhost"
-			key, err := genECHServerKey(1, publicName)
-			if err != nil {
-				log.Fatalf("failed to generate ech config: %v", err)
-			}
-
-			serverKey = key
+			log.Fatalf("failed to enable ECH")
 		}
 
-		tlsConf.EncryptedClientHelloKeys = []tls.EncryptedClientHelloKey{serverKey}
 	}
 
 	mux := http.NewServeMux()

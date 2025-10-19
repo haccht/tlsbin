@@ -1,4 +1,4 @@
-package cmd
+package subcmd
 
 import (
 	"crypto/tls"
@@ -77,7 +77,7 @@ func toExtensionName(id uint16) string {
 	return fmt.Sprintf("%s (0x%04x)", name, id)
 }
 
-func mapToString[T any](in []T, f func(T) string) []string {
+func mapSliceToString[T any](in []T, f func(T) string) []string {
 	out := make([]string, len(in))
 	for i, v := range in {
 		out[i] = f(v)
