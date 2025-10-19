@@ -23,7 +23,7 @@ import (
 // ServerCmd holds the command-line options for the server command
 type ServerCmd struct {
 	Addr          string   `short:"a" long:"addr" description:"Server address" default:"127.0.0.1:8080"`
-	TLSCert       string   `long:"tls-crt" description:"TLS certificate file path"`
+	TLSCert       string   `long:"tls-cert" description:"TLS certificate file path"`
 	TLSKey        string   `long:"tls-key" description:"TLS key file path"`
 	TLSMinVersion string   `long:"tls-min-ver" description:"Minimum TLS version" choice:"1.0" choice:"1.1" choice:"1.2" choice:"1.3"`
 	TLSMaxVersion string   `long:"tls-max-ver" description:"Maximum TLS version" choice:"1.0" choice:"1.1" choice:"1.2" choice:"1.3"`
@@ -136,7 +136,9 @@ func (s *Server) handleInspectRequest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
+    enc := json.NewEncoder(w)
+    enc.SetIndent("", "  ")
+    enc.Encode(resp)
 }
 
 // ListenAndServe starts the TLS server.
@@ -200,38 +202,43 @@ func (s *Server) ListenAndServe() {
 	}
 
 	if s.opts.MTLSAuth != "off" {
-		if s.opts.MTLSClientCA != "" {
-			caCert, err := os.ReadFile(s.opts.MTLSClientCA)
-			if err != nil {
-				log.Fatalf("failed to load client CA cert: %v", err)
-			}
-			caCertPool := x509.NewCertPool()
-			caCertPool.AppendCertsFromPEM(caCert)
+		if s.opts.MTLSClientCA == "" {
+			log.Fatalf("--mtls-ca is required to enable mTLS")
+		}
 
-			tlsConf.ClientCAs = caCertPool
-			tlsConf.ClientAuth = tls.RequireAndVerifyClientCert
-		} else {
+		caCert, err := os.ReadFile(s.opts.MTLSClientCA)
+		if err != nil {
+			log.Fatalf("failed to load client CA cert: %v", err)
+		}
+		caCertPool := x509.NewCertPool()
+		caCertPool.AppendCertsFromPEM(caCert)
+
+		tlsConf.ClientCAs = caCertPool
+
+		switch s.opts.MTLSAuth {
+		case "request":
 			tlsConf.ClientAuth = tls.RequestClientCert
+		case "required":
+			tlsConf.ClientAuth = tls.RequireAndVerifyClientCert
 		}
 	}
 
 	if s.opts.ECHEnabled {
-		if s.opts.EchKey != "" && s.opts.EchConfig != "" {
-			keyBytes, err := base64.StdEncoding.DecodeString(s.opts.EchKey)
-			if err != nil {
-				log.Fatalf("failed to decode ech-key: %v", err)
-			}
-			configBytes, err := base64.StdEncoding.DecodeString(s.opts.EchConfig)
-			if err != nil {
-				log.Fatalf("failed to decode ech-config: %v", err)
-			}
-
-			serverKey := tls.EncryptedClientHelloKey{PrivateKey: keyBytes, Config: configBytes}
-			tlsConf.EncryptedClientHelloKeys = []tls.EncryptedClientHelloKey{serverKey}
-		} else {
-			log.Fatalf("failed to enable ECH")
+		if s.opts.EchKey == "" || s.opts.EchConfig == "" {
+			log.Fatalf("--ech-key and --ech-config is required to enable ECH")
 		}
 
+		keyBytes, err := base64.StdEncoding.DecodeString(s.opts.EchKey)
+		if err != nil {
+			log.Fatalf("failed to decode ech-key: %v", err)
+		}
+		configBytes, err := base64.StdEncoding.DecodeString(s.opts.EchConfig)
+		if err != nil {
+			log.Fatalf("failed to decode ech-config: %v", err)
+		}
+
+		serverKey := tls.EncryptedClientHelloKey{PrivateKey: keyBytes, Config: configBytes}
+		tlsConf.EncryptedClientHelloKeys = []tls.EncryptedClientHelloKey{serverKey}
 	}
 
 	mux := http.NewServeMux()
