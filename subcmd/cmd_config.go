@@ -125,7 +125,7 @@ func (o *ConfigMTLSCmd) Execute(args []string) error {
 	fmt.Println("Generate a client certificate to authenticate client with this CA")
 	fmt.Println("")
 	fmt.Println("$ openssl genrsa -out client.key 2048")
-	fmt.Println("$ openssl req -new -key client.key -out client.csr -subj 'CN=client.tlsbin.net'")
+	fmt.Println("$ openssl req -new -key client.key -out client.csr -subj 'CN=/client-name.tlsbin.net'")
 	fmt.Printf("$ openssl x509 -req -CA %s -CAkey %s -CAcreateserial \\\n", o.CACertPath, o.CAKeyPath)
 	fmt.Println("    -in client.csr -out client.crt -days 365 -sha256 -extfile <(echo \"extendedKeyUsage = clientAuth\")")
 	fmt.Println("---------------------------------")

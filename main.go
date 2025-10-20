@@ -7,10 +7,9 @@ import (
 	"github.com/jessevdk/go-flags"
 )
 
-
 type Options struct {
-	Server  subcmd.ServerCmd  `command:"server" description:"Run the TLS inspection server"`
-	Config  subcmd.ConfigCmd  `command:"config" description:"Generate configuration artifacts (mTLS/ECH)"`
+	Server subcmd.ServerCmd `command:"server" description:"Run the TLS inspection server"`
+	Config subcmd.ConfigCmd `command:"config" description:"Generate configuration artifacts (mTLS/ECH)"`
 }
 
 func main() {

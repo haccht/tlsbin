@@ -29,7 +29,7 @@ type ServerCmd struct {
 	TLSMaxVersion string   `long:"tls-max-ver" description:"Maximum TLS version" choice:"1.0" choice:"1.1" choice:"1.2" choice:"1.3"`
 	Protocols     []string `long:"alpn" description:"List of application protocols" choice:"http/1.1" choice:"h2"`
 	CipherSuites  []string `long:"cipher" description:"List of ciphersuites (TLS1.3 ciphersuites are not configurable)"`
-	MTLSAuth      string   `long:"mtls-auth" default:"off" choice:"off" choice:"request" choice:"require" description:"Client cert auth mode"`
+	MTLSAuth      string   `long:"mtls-auth" default:"off" choice:"off" choice:"request" choice:"required" choice:"verify" description:"Client cert auth mode"`
 	MTLSClientCA  string   `long:"mtls-ca" description:"mTLS Client CA certificate file path"`
 	ECHEnabled    bool     `long:"ech-enabled" description:"Enable ECH (Encrypted Client Hello)"`
 	EchKey        string   `long:"ech-key" description:"Base64-encoded ECH private key"`
@@ -144,14 +144,14 @@ func (s *Server) handleInspectRequest(w http.ResponseWriter, r *http.Request) {
 // ListenAndServe starts the TLS server.
 func (s *Server) ListenAndServe() {
 	tlsConf := &tls.Config{
-		GetConfigForClient: func(ch *tls.ClientHelloInfo) (*tls.Config, error) {
-			s.chiStore.Store(connKey(ch.Conn), clientHelloInfo{
-				ServerName:        ch.ServerName,
-				SupportedProtos:   ch.SupportedProtos,
-				CipherSuites:      mapSliceToString(ch.CipherSuites, toCipherSuiteName),
-				SupportedVersions: mapSliceToString(ch.SupportedVersions, toTLSVersionName),
-				SignatureSchemes:  mapSliceToString(ch.SignatureSchemes, toSignatureSchemeName),
-				Extensions:        mapSliceToString(ch.Extensions, toExtensionName),
+		GetConfigForClient: func(chi *tls.ClientHelloInfo) (*tls.Config, error) {
+			s.chiStore.Store(connKey(chi.Conn), clientHelloInfo{
+				ServerName:        chi.ServerName,
+				SupportedProtos:   chi.SupportedProtos,
+				CipherSuites:      mapSliceToString(chi.CipherSuites, toCipherSuiteName),
+				SupportedVersions: mapSliceToString(chi.SupportedVersions, toTLSVersionName),
+				SignatureSchemes:  mapSliceToString(chi.SignatureSchemes, toSignatureSchemeName),
+				Extensions:        mapSliceToString(chi.Extensions, toExtensionName),
 			})
 			return nil, nil
 		},
@@ -213,13 +213,16 @@ func (s *Server) ListenAndServe() {
 		caCertPool := x509.NewCertPool()
 		caCertPool.AppendCertsFromPEM(caCert)
 		tlsConf.ClientCAs = caCertPool
-
-		switch s.opts.MTLSAuth {
-		case "request":
-			tlsConf.ClientAuth = tls.RequestClientCert
-		case "required":
-			tlsConf.ClientAuth = tls.RequireAndVerifyClientCert
-		}
+	}
+	switch s.opts.MTLSAuth {
+	case "request":
+		tlsConf.ClientAuth = tls.RequestClientCert
+	case "required":
+		tlsConf.ClientAuth = tls.RequireAnyClientCert
+	case "verify":
+		tlsConf.ClientAuth = tls.RequireAndVerifyClientCert
+	default:
+		tlsConf.ClientAuth = tls.NoClientCert
 	}
 
 	if s.opts.ECHEnabled {
@@ -237,7 +240,7 @@ func (s *Server) ListenAndServe() {
 			log.Fatalf("failed to decode ech-config: %v", err)
 		}
 
-		serverKey := tls.EncryptedClientHelloKey{PrivateKey: key, Config: cfg}
+		serverKey := tls.EncryptedClientHelloKey{Config: cfg, PrivateKey: key, SendAsRetry: true}
 		tlsConf.EncryptedClientHelloKeys = []tls.EncryptedClientHelloKey{serverKey}
 	}
 
