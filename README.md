@@ -4,15 +4,15 @@
 This application provides a TLS server that allows you to easily observe the details of the TLS handshake from any client.
 It is especially useful for testing supported TLS versions, cipher suites, ALPN protocols, ECH (Encrypted Client Hello), and mTLS configurations.
 
-`tlsbin` also includes helper commands to generate the necessary cryptographic materials (CAs, certificates, ECH keys) for setting up advanced TLS test scenarios.
+`tlsbin` also includes helper commands to generate the necessary cryptographic materials (CAs, ECH keys) for setting up advanced TLS test scenarios.
+
 
 ## Features
 
-- **TLS Inspection Server**: Start a TLS server with customizable address, protocol, and cipher settings.
-- **Detailed Handshake Information**: View detailed TLS handshake dumps (including Client Hello) via an HTTP request.
-- **Certificate Generation**: Built-in commands to create your own Certificate Authority (CA) and sign server/client certificates.
+- **Handshake Information**: View detailed TLS handshake dumps via an HTTP request.
 - **ECH Support**: Generate static ECH (Encrypted Client Hello) keys and configure the server to use them.
-- **mTLS Testing**: Easily test mTLS setups by generating CAs and client certificates and configuring the server to require them.
+- **mTLS Support**: Easily test mTLS setups by generating a CA and configuring the server to require client certificates.
+
 
 ## Installation
 ```
@@ -26,28 +26,26 @@ go install github.com/haccht/tlsbin@latest
 ```
 $ tlsbin --help
 Usage:
-  tlsbin [OPTIONS] <gen-ech|gen-ca|gen-cert|run>
+  tlsbin [OPTIONS] <server|config>
 
 Available commands:
-  gen-ca    Generate a new CA certificate and key for mTLS
-  gen-cert  Generate a new certificate signed by a CA for mTLS
-  gen-ech   Generate a new key and config for ECH
-  run       Run the TLS inspection server
+  server  Run the TLS inspection server
+  config  Generate configuration artifacts (mTLS/ECH)
 ```
 
-### `run` command
+### `server` command
 
 This command starts the main TLS inspection server.
 
 ```
-$ tlsbin run [OPTIONS]
+$ tlsbin server [OPTIONS]
 ```
 The server will start, and you can send a request to it (e.g., with `curl`) to receive a JSON dump of the client's TLS handshake information.
 
 **Example:**
 ```
 # Start the server
-$ tlsbin run
+$ tlsbin server
 
 # In another terminal, make a request
 $ curl -s -k https://127.0.0.1:8080 | jq .
@@ -154,70 +152,77 @@ $ curl -s -k https://127.0.0.1:8080 | jq .
 }
 ```
 
-**Common `run` options:**
+**Common `server` options:**
 
 ```
       -a, --addr=                         Server address (default: 127.0.0.1:8080)
-          --tls-crt=                      TLS certificate file path
+          --tls-cert=                     TLS certificate file path
           --tls-key=                      TLS key file path
           --tls-min-ver=[1.0|1.1|1.2|1.3] Minimum TLS version
           --tls-max-ver=[1.0|1.1|1.2|1.3] Maximum TLS version
           --alpn=[http/1.1|h2]            List of application protocols
           --cipher=                       List of ciphersuites (TLS1.3 ciphersuites are not configurable)
-          --enable-mtls                   Enable mTLS
+          --mtls-auth=[off|request|required|verify] Client cert auth mode (default: off)
           --mtls-ca=                      mTLS Client CA certificate file path
-          --enable-ech                    Enable ECH (Encrypted Client Hello)
+          --ech-enabled                   Enable ECH (Encrypted Client Hello)
           --ech-key=                      Base64-encoded ECH private key
-          --ech-config=                   Base64-encoded ECH configuration list
+          --ech-cfg=                      Base64-encoded ECH configuration list
 ```
 
 ---
 
-### Certificate and Key Generation for mTLS
+### `config` command
 
-#### 1. `gen-ca`
+This command provides subcommands to generate cryptographic materials.
+
+```
+$ tlsbin config --help
+Usage:
+  tlsbin [OPTIONS] config <ech|mtls>
+
+Available commands:
+  ech   Configure ECH key
+  mtls  Configure mTLS key
+```
+
+#### `config mtls`
 
 Create a new root Certificate Authority (CA) for mTLS.
 
 ```
-$ tlsbin gen-ca --common-name="mTLS CA"
-2025/08/18 21:30:00 wrote CA certificate to ca.crt
-2025/08/18 21:30:00 wrote CA private key to ca.key
-```
-This creates `ca.crt` and `ca.key`.
+$ tlsbin config mtls --cn="mTLS CA"
+Generating a new CA key pair...
 
-#### 2. `gen-cert`
+Successfully generated a CA key pair.
+---------------------------------
+Generate a client certificate to authenticate client with this CA
+
+$ openssl genrsa -out client.key 2048
+$ openssl req -new -key client.key -out client.csr -subj 'CN=/client-name.tlsbin.net'
+$ openssl x509 -req -CA ca.crt -CAkey ca.key -CAcreateserial \
+    -in client.csr -out client.crt -days 365 -sha256 -extfile <(echo "extendedKeyUsage = clientAuth")
+---------------------------------
+```
+This creates `ca.crt` and `ca.key` in the current directory. You can then use `openssl` to generate client certificates signed by this CA.
+
+
+#### `config ech`
 
 Create a new certificate signed by your CA for mTLS.
-```
-$ tlsbin gen-cert --common-name="my-client" --cert-path=client.crt --key-path=client.key
-2025/08/18 21:32:00 wrote certificate to client.crt
-2025/08/18 21:32:00 wrote private key to client.key
-```
-This uses `ca.crt` and `ca.key` by default to sign the new certificate.
-
----
-
-### ECH (Encrypted Client Hello)
-
-#### `gen-ech`
-
-Generate a static ECH key pair and the corresponding DNS record info.
 
 ```
-$ tlsbin gen-ech --public-name="ech.example.com"
-Generating new ECH key pair...
+$ tlsbin config ech --public-name="ech.tlsbin.net"
+Generating a new ECH key pair...
 
-Successfully generated ECH keys.
+Successfully generated a ECH key pair.
 ---------------------------------
-Add the following flags to the 'run' command to use this static key:
+Add the following flags to the 'server' command to use this static key:
 
   --ech-key="..." \
-  --ech-config="..."
+  --ech-cfg="..."
 
 Add the following HTTPS record to your zone for the backend FQDN:
 
-  HTTPS 1 . ech="..."
----------------------------------
+  IN HTTPS 1 . ech="..."
 ```
-You can then pass the generated `--ech-key` and `--ech-config` values to the `run` command to start the server with a stable ECH configuration.
+You can then pass the generated `--ech-key` and `--ech-cfg` values to the `server` command to start the server with a stable ECH configuration.
