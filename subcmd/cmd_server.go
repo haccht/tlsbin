@@ -116,10 +116,24 @@ func (s *Server) handleInspectRequest(w http.ResponseWriter, r *http.Request) {
 
 	var mtls = map[string]any{"enabled": false}
 	if len(r.TLS.PeerCertificates) > 0 {
+		certs := make([]map[string]string, len(r.TLS.PeerCertificates))
+		for i, v := range r.TLS.PeerCertificates{
+			serial := fmt.Sprintf("%X", v.SerialNumber)
+			if len(serial)%2 != 0 {
+				serial = "0" + serial
+			}
+
+			certs[i] = map[string]string{
+				"subject": v.Subject.String(),
+				"issuer": v.Issuer.String(),
+				"serial": serial,
+				"not_before": v.NotBefore.String(),
+				"not_after": v.NotAfter.String(),
+			}
+		}
+
 		mtls["enabled"] = true
-		mtls["subject"] = mapSliceToString(r.TLS.PeerCertificates, func(v *x509.Certificate) string {
-			return v.Subject.String()
-		})
+		mtls["peer_certs"] = certs
 	}
 
 	resp := map[string]any{
