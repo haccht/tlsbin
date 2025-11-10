@@ -29,7 +29,7 @@ type ServerCmd struct {
 	TLSMaxVersion string   `long:"tls-max-ver" description:"Maximum TLS version" choice:"1.0" choice:"1.1" choice:"1.2" choice:"1.3"`
 	Protocols     []string `long:"alpn" description:"List of application protocols" choice:"http/1.1" choice:"h2"`
 	CipherSuites  []string `long:"cipher" description:"List of ciphersuites (TLS1.3 ciphersuites are not configurable)"`
-	MTLSAuth      string   `long:"mtls-auth" default:"off" choice:"off" choice:"request" choice:"required" choice:"verify" description:"Client cert auth mode"`
+	MTLSAuth      string   `long:"mtls-auth" default:"off" choice:"off" choice:"request" choice:"required" choice:"verify" choice:"verify-if-given" description:"Client cert auth mode"`
 	MTLSClientCA  string   `long:"mtls-ca" description:"mTLS Client CA certificate file path"`
 	ECHEnabled    bool     `long:"ech-enabled" description:"Enable ECH (Encrypted Client Hello)"`
 	ECHKey        string   `long:"ech-key" description:"Base64-encoded ECH private key"`
@@ -255,6 +255,8 @@ func (s *Server) ListenAndServe() error {
 		tlsConf.ClientAuth = tls.RequireAnyClientCert
 	case "verify":
 		tlsConf.ClientAuth = tls.RequireAndVerifyClientCert
+	case "verify-if-given":
+		tlsConf.ClientAuth = tls.VerifyClientCertIfGiven
 	default:
 		tlsConf.ClientAuth = tls.NoClientCert
 	}
