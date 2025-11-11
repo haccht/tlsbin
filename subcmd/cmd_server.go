@@ -45,6 +45,16 @@ type clientHelloInfo struct {
 	Extensions        []string `json:"extensions"`
 }
 
+type servedCertInfo struct {
+	Subject       string   `json:"subject"`
+	Issuer        string   `json:"issuer"`
+	Serial        string   `json:"serial"`
+	NotBefore     string   `json:"not_before"`
+	NotAfter      string   `json:"not_after"`
+	DNSNames      []string `json:"dns_names"`
+	PubKeyAlgo    string   `json:"public_key_algo"`
+}
+
 type ctxConnKey struct{}
 
 func connKey(c net.Conn) string {
@@ -58,6 +68,7 @@ func connKey(c net.Conn) string {
 type Server struct {
 	opts     ServerCmd
 	chiStore sync.Map
+	sciStore sync.Map
 }
 
 // New creates a new server with the given options.
@@ -106,10 +117,14 @@ func (s *Server) handleInspectRequest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var chi clientHelloInfo
+	var sci servedCertInfo
 	if v := r.Context().Value(ctxConnKey{}); v != nil {
 		if c, ok := v.(net.Conn); ok {
 			if hv, ok := s.chiStore.Load(connKey(c)); ok {
 				chi = hv.(clientHelloInfo)
+			}
+			if hv, ok := s.sciStore.Load(connKey(c)); ok {
+				sci = hv.(servedCertInfo)
 			}
 		}
 	}
@@ -118,27 +133,24 @@ func (s *Server) handleInspectRequest(w http.ResponseWriter, r *http.Request) {
 	if len(r.TLS.PeerCertificates) > 0 {
 		certs := make([]map[string]string, len(r.TLS.PeerCertificates))
 		for i, v := range r.TLS.PeerCertificates{
-			serial := fmt.Sprintf("%X", v.SerialNumber)
-			if len(serial)%2 != 0 {
-				serial = "0" + serial
-			}
-
 			certs[i] = map[string]string{
 				"subject": v.Subject.String(),
 				"issuer": v.Issuer.String(),
-				"serial": serial,
-				"not_before": v.NotBefore.String(),
-				"not_after": v.NotAfter.String(),
+				"serial": fmt.Sprintf("%X", v.SerialNumber),
+				"not_before": v.NotBefore.UTC().Format(time.RFC3339),
+				"not_after": v.NotAfter.UTC().Format(time.RFC3339),
+				"public_key_algo": v.PublicKeyAlgorithm.String(),
 			}
 		}
 
 		mtls["enabled"] = true
-		mtls["peer_certs"] = certs
+		mtls["client_certs"] = certs
 	}
 
 	resp := map[string]any{
 		"client_hello": chi,
-		"mTLS":         mtls,
+		"served_cert": sci,
+		"mtls": mtls,
 		"negotiated": map[string]any{
 			"sni":          r.TLS.ServerName,
 			"alpn":         r.TLS.NegotiatedProtocol,
@@ -146,8 +158,8 @@ func (s *Server) handleInspectRequest(w http.ResponseWriter, r *http.Request) {
 			"tls_version":  tls.VersionName(r.TLS.Version),
 			"cipher_suite": tls.CipherSuiteName(r.TLS.CipherSuite),
 			"did_resume":   r.TLS.DidResume,
-			"scts":         len(r.TLS.SignedCertificateTimestamps),
 			"ocsp_bytes":   len(r.TLS.OCSPResponse),
+			"scts":         len(r.TLS.SignedCertificateTimestamps),
 		},
 	}
 
@@ -159,25 +171,15 @@ func (s *Server) handleInspectRequest(w http.ResponseWriter, r *http.Request) {
 
 // ListenAndServe starts the TLS server.
 func (s *Server) ListenAndServe() error {
-	tlsConf := &tls.Config{
-		GetConfigForClient: func(chi *tls.ClientHelloInfo) (*tls.Config, error) {
-			s.chiStore.Store(connKey(chi.Conn), clientHelloInfo{
-				ServerName:        chi.ServerName,
-				SupportedProtos:   chi.SupportedProtos,
-				CipherSuites:      mapSliceToString(chi.CipherSuites, toCipherSuiteName),
-				SupportedVersions: mapSliceToString(chi.SupportedVersions, toTLSVersionName),
-				SignatureSchemes:  mapSliceToString(chi.SignatureSchemes, toSignatureSchemeName),
-				Extensions:        mapSliceToString(chi.Extensions, toExtensionName),
-			})
-			return nil, nil
-		},
-	}
+	tlsConf := &tls.Config{}
 
+	var cert tls.Certificate
 	if s.opts.TLSCert != "" && s.opts.TLSKey != "" {
 		log.Printf("TLS certificate: %s", s.opts.TLSCert)
 		log.Printf("TLS private key: %s", s.opts.TLSKey)
 
-		cert, err := tls.LoadX509KeyPair(s.opts.TLSCert, s.opts.TLSKey)
+		var err error
+		cert, err = tls.LoadX509KeyPair(s.opts.TLSCert, s.opts.TLSKey)
 		if err != nil {
 			fmt.Errorf("failed to load a key pair: %v", err)
 		}
@@ -186,7 +188,8 @@ func (s *Server) ListenAndServe() error {
 	} else {
 		log.Printf("Generate a new self-signed cert")
 
-		cert, err := newSelfSignedCert()
+		var err error
+		cert, err = newSelfSignedCert()
 		if err != nil {
 			fmt.Errorf("failed to generate a self signed cert: %v", err)
 		}
@@ -283,6 +286,28 @@ func (s *Server) ListenAndServe() error {
 		serverKey := tls.EncryptedClientHelloKey{Config: cfg, PrivateKey: key, SendAsRetry: true}
 		tlsConf.EncryptedClientHelloKeys = []tls.EncryptedClientHelloKey{serverKey}
 	}
+
+	tlsConf.GetConfigForClient = func(chi *tls.ClientHelloInfo) (*tls.Config, error) {
+			v := cert.Leaf
+			s.chiStore.Store(connKey(chi.Conn), clientHelloInfo{
+				ServerName:        chi.ServerName,
+				SupportedProtos:   chi.SupportedProtos,
+				CipherSuites:      mapSliceToString(chi.CipherSuites, toCipherSuiteName),
+				SupportedVersions: mapSliceToString(chi.SupportedVersions, toTLSVersionName),
+				SignatureSchemes:  mapSliceToString(chi.SignatureSchemes, toSignatureSchemeName),
+				Extensions:        mapSliceToString(chi.Extensions, toExtensionName),
+			})
+			s.sciStore.Store(connKey(chi.Conn), servedCertInfo{
+				Subject: v.Subject.String(),
+				Issuer: v.Issuer.String(),
+				Serial: fmt.Sprintf("%X", v.SerialNumber),
+				NotBefore: v.NotBefore.UTC().Format(time.RFC3339),
+				NotAfter : v.NotAfter.UTC().Format(time.RFC3339),
+				PubKeyAlgo: v.PublicKeyAlgorithm.String(),
+				DNSNames: append([]string(nil), v.DNSNames...),
+			})
+			return nil, nil
+		}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleInspectRequest)
