@@ -48,7 +48,7 @@ The server will start, and you can send a request to it (e.g., with `curl`) to r
 $ tlsbin server
 
 # In another terminal, make a request
-$ curl -s -k https://127.0.0.1:8080 | jq .
+$ curl -s -k https://localhost:8080
 {
   "client_hello": {
     "sni": "localhost",
@@ -129,15 +129,24 @@ $ curl -s -k https://127.0.0.1:8080 | jq .
     "extensions": [
       "supported_versions (0x002b)",
       "key_share (0x0033)",
-      "server_name (0x0000)",
       "ec_point_formats (0x000b)",
       "supported_groups (0x000a)",
       "signature_algorithms (0x000d)",
       "application_layer_protocol_negotiation (0x0010)"
     ]
   },
-  "mTLS": {
-    "enabled": false
+  "mtls": {
+    "client_certs": [
+      {
+        "issuer": "CN=tlsbin root CA",
+        "not_after": "2026-11-06T14:37:32Z",
+        "not_before": "2025-11-06T14:37:32Z",
+        "public_key_algo": "RSA",
+        "serial": "35B2C0EB26B9B6286E44D2119477430AE3EA85AA",
+        "subject": "CN=client1.tlsbin.net"
+      }
+    ],
+    "enabled": true
   },
   "negotiated": {
     "alpn": "h2",
@@ -146,8 +155,19 @@ $ curl -s -k https://127.0.0.1:8080 | jq .
     "ech_accepted": false,
     "ocsp_bytes": 0,
     "scts": 0,
-    "sni": "localhost",
+    "sni": "",
     "tls_version": "TLS 1.3"
+  },
+  "served_cert": {
+    "subject": "CN=localhost",
+    "issuer": "CN=localhost",
+    "serial": "FF0584230B97BB",
+    "not_before": "2025-11-11T04:01:44Z",
+    "not_after": "2026-11-11T05:01:44Z",
+    "dns_names": [
+      "localhost"
+    ],
+    "public_key_algo": "ECDSA"
   }
 }
 ```
@@ -155,18 +175,18 @@ $ curl -s -k https://127.0.0.1:8080 | jq .
 **Common `server` options:**
 
 ```
-      -a, --addr=                         Server address (default: 127.0.0.1:8080)
-          --tls-cert=                     TLS certificate file path
-          --tls-key=                      TLS key file path
-          --tls-min-ver=[1.0|1.1|1.2|1.3] Minimum TLS version
-          --tls-max-ver=[1.0|1.1|1.2|1.3] Maximum TLS version
-          --alpn=[http/1.1|h2]            List of application protocols
-          --cipher=                       List of ciphersuites (TLS1.3 ciphersuites are not configurable)
-          --mtls-auth=[off|request|required|verify] Client cert auth mode (default: off)
-          --mtls-ca=                      mTLS Client CA certificate file path
-          --ech-enabled                   Enable ECH (Encrypted Client Hello)
-          --ech-key=                      Base64-encoded ECH private key
-          --ech-cfg=                      Base64-encoded ECH configuration list
+      -a, --addr=                                                   Server address (default: 127.0.0.1:8080)
+          --tls-cert=                                               TLS certificate file path
+          --tls-key=                                                TLS key file path
+          --tls-min-ver=[1.0|1.1|1.2|1.3]                           Minimum TLS version
+          --tls-max-ver=[1.0|1.1|1.2|1.3]                           Maximum TLS version
+          --alpn=[http/1.1|h2]                                      List of application protocols
+          --cipher=                                                 List of ciphersuites (TLS1.3 ciphersuites are not configurable)
+          --mtls-auth=[off|request|required|verify|verify-if-given] Client cert auth mode (default: off)
+          --mtls-ca=                                                mTLS Client CA certificate file path
+          --ech-enabled                                             Enable ECH (Encrypted Client Hello)
+          --ech-key=                                                Base64-encoded ECH private key
+          --ech-cfg=                                                Base64-encoded ECH configuration
 ```
 
 ---
