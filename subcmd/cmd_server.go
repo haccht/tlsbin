@@ -46,13 +46,13 @@ type clientHelloInfo struct {
 }
 
 type servedCertInfo struct {
-	Subject       string   `json:"subject"`
-	Issuer        string   `json:"issuer"`
-	Serial        string   `json:"serial"`
-	NotBefore     string   `json:"not_before"`
-	NotAfter      string   `json:"not_after"`
-	DNSNames      []string `json:"dns_names"`
-	PubKeyAlgo    string   `json:"public_key_algo"`
+	Subject    string   `json:"subject"`
+	Issuer     string   `json:"issuer"`
+	Serial     string   `json:"serial"`
+	NotBefore  string   `json:"not_before"`
+	NotAfter   string   `json:"not_after"`
+	DNSNames   []string `json:"dns_names"`
+	PubKeyAlgo string   `json:"public_key_algo"`
 }
 
 type ctxConnKey struct{}
@@ -69,6 +69,7 @@ type Server struct {
 	opts     ServerCmd
 	chiStore sync.Map
 	sciStore sync.Map
+	osiStore sync.Map
 }
 
 // New creates a new server with the given options.
@@ -116,14 +117,19 @@ func (s *Server) handleInspectRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var osi string
 	var chi clientHelloInfo
 	var sci servedCertInfo
 	if v := r.Context().Value(ctxConnKey{}); v != nil {
 		if c, ok := v.(net.Conn); ok {
-			if hv, ok := s.chiStore.Load(connKey(c)); ok {
+			k := connKey(c)
+			if hv, ok := s.osiStore.Load(k); ok {
+				osi = hv.(string)
+			}
+			if hv, ok := s.chiStore.Load(k); ok {
 				chi = hv.(clientHelloInfo)
 			}
-			if hv, ok := s.sciStore.Load(connKey(c)); ok {
+			if hv, ok := s.sciStore.Load(k); ok {
 				sci = hv.(servedCertInfo)
 			}
 		}
@@ -132,13 +138,13 @@ func (s *Server) handleInspectRequest(w http.ResponseWriter, r *http.Request) {
 	var mtls = map[string]any{"enabled": false}
 	if len(r.TLS.PeerCertificates) > 0 {
 		certs := make([]map[string]string, len(r.TLS.PeerCertificates))
-		for i, v := range r.TLS.PeerCertificates{
+		for i, v := range r.TLS.PeerCertificates {
 			certs[i] = map[string]string{
-				"subject": v.Subject.String(),
-				"issuer": v.Issuer.String(),
-				"serial": fmt.Sprintf("%X", v.SerialNumber),
-				"not_before": v.NotBefore.UTC().Format(time.RFC3339),
-				"not_after": v.NotAfter.UTC().Format(time.RFC3339),
+				"subject":         v.Subject.String(),
+				"issuer":          v.Issuer.String(),
+				"serial":          fmt.Sprintf("%X", v.SerialNumber),
+				"not_before":      v.NotBefore.UTC().Format(time.RFC3339),
+				"not_after":       v.NotAfter.UTC().Format(time.RFC3339),
 				"public_key_algo": v.PublicKeyAlgorithm.String(),
 			}
 		}
@@ -147,14 +153,21 @@ func (s *Server) handleInspectRequest(w http.ResponseWriter, r *http.Request) {
 		mtls["client_certs"] = certs
 	}
 
+	var ech = map[string]any{"accepted": false}
+	if r.TLS.ECHAccepted {
+		ech["accepted"] = true
+		ech["outer_sni"] = osi
+		ech["inner_sni"] = r.TLS.ServerName
+	}
+
 	resp := map[string]any{
 		"client_hello": chi,
-		"served_cert": sci,
-		"mtls": mtls,
+		"served_cert":  sci,
+		"mtls":         mtls,
 		"negotiated": map[string]any{
 			"sni":          r.TLS.ServerName,
+            "ech":          ech,
 			"alpn":         r.TLS.NegotiatedProtocol,
-			"ech_accepted": r.TLS.ECHAccepted,
 			"tls_version":  tls.VersionName(r.TLS.Version),
 			"cipher_suite": tls.CipherSuiteName(r.TLS.CipherSuite),
 			"did_resume":   r.TLS.DidResume,
@@ -284,30 +297,38 @@ func (s *Server) ListenAndServe() error {
 		}
 
 		serverKey := tls.EncryptedClientHelloKey{Config: cfg, PrivateKey: key, SendAsRetry: true}
-		tlsConf.EncryptedClientHelloKeys = []tls.EncryptedClientHelloKey{serverKey}
+		serverKeys := []tls.EncryptedClientHelloKey{serverKey}
+		tlsConf.EncryptedClientHelloKeys = serverKeys
+
+		tlsConf.GetEncryptedClientHelloKeys = func(chi *tls.ClientHelloInfo) ([]tls.EncryptedClientHelloKey, error) {
+			k := connKey(chi.Conn)
+			s.osiStore.LoadOrStore(k, chi.ServerName)
+			return serverKeys, nil
+		}
 	}
 
 	tlsConf.GetConfigForClient = func(chi *tls.ClientHelloInfo) (*tls.Config, error) {
-			v := cert.Leaf
-			s.chiStore.Store(connKey(chi.Conn), clientHelloInfo{
-				ServerName:        chi.ServerName,
-				SupportedProtos:   chi.SupportedProtos,
-				CipherSuites:      mapSliceToString(chi.CipherSuites, toCipherSuiteName),
-				SupportedVersions: mapSliceToString(chi.SupportedVersions, toTLSVersionName),
-				SignatureSchemes:  mapSliceToString(chi.SignatureSchemes, toSignatureSchemeName),
-				Extensions:        mapSliceToString(chi.Extensions, toExtensionName),
-			})
-			s.sciStore.Store(connKey(chi.Conn), servedCertInfo{
-				Subject: v.Subject.String(),
-				Issuer: v.Issuer.String(),
-				Serial: fmt.Sprintf("%X", v.SerialNumber),
-				NotBefore: v.NotBefore.UTC().Format(time.RFC3339),
-				NotAfter : v.NotAfter.UTC().Format(time.RFC3339),
-				PubKeyAlgo: v.PublicKeyAlgorithm.String(),
-				DNSNames: append([]string(nil), v.DNSNames...),
-			})
-			return nil, nil
-		}
+		v := cert.Leaf
+		k := connKey(chi.Conn)
+		s.chiStore.Store(k, clientHelloInfo{
+			ServerName:        chi.ServerName,
+			SupportedProtos:   chi.SupportedProtos,
+			CipherSuites:      mapSliceToString(chi.CipherSuites, toCipherSuiteName),
+			SupportedVersions: mapSliceToString(chi.SupportedVersions, toTLSVersionName),
+			SignatureSchemes:  mapSliceToString(chi.SignatureSchemes, toSignatureSchemeName),
+			Extensions:        mapSliceToString(chi.Extensions, toExtensionName),
+		})
+		s.sciStore.Store(k, servedCertInfo{
+			Subject:    v.Subject.String(),
+			Issuer:     v.Issuer.String(),
+			Serial:     fmt.Sprintf("%X", v.SerialNumber),
+			NotBefore:  v.NotBefore.UTC().Format(time.RFC3339),
+			NotAfter:   v.NotAfter.UTC().Format(time.RFC3339),
+			PubKeyAlgo: v.PublicKeyAlgorithm.String(),
+			DNSNames:   append([]string(nil), v.DNSNames...),
+		})
+		return nil, nil
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleInspectRequest)
