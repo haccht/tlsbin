@@ -20,7 +20,7 @@ import (
 	"time"
 )
 
-// ServerCmd holds the command-line options for the server command
+// ServerCmd holds the command-line options for the 'server' command.
 type ServerCmd struct {
 	Addr          string   `short:"a" long:"addr" description:"Server address" default:"127.0.0.1:8080"`
 	TLSCert       string   `long:"tls-cert" description:"TLS certificate file path"`
@@ -36,6 +36,7 @@ type ServerCmd struct {
 	ECHConfig     string   `long:"ech-cfg" description:"Base64-encoded ECH configuration"`
 }
 
+// clientHelloInfo stores information from the TLS Client Hello message.
 type clientHelloInfo struct {
 	ServerName        string   `json:"sni"`
 	SupportedProtos   []string `json:"alpn"`
@@ -45,6 +46,7 @@ type clientHelloInfo struct {
 	Extensions        []string `json:"extensions"`
 }
 
+// servedCertInfo stores information about the certificate served to the client.
 type servedCertInfo struct {
 	Subject    string   `json:"subject"`
 	Issuer     string   `json:"issuer"`
@@ -64,7 +66,7 @@ func connKey(c net.Conn) string {
 	return fmt.Sprintf("%s|%s", c.LocalAddr().String(), c.RemoteAddr().String())
 }
 
-// Server is the main server struct
+// Server represents the TLS inspection server.
 type Server struct {
 	opts     ServerCmd
 	chiStore sync.Map
@@ -72,12 +74,12 @@ type Server struct {
 	osiStore sync.Map
 }
 
-// New creates a new server with the given options.
+// New creates a new Server instance.
 func New(opts ServerCmd) *Server {
 	return &Server{opts: opts}
 }
 
-// Execute runs the server command.
+// Execute is the entry point for the 'server' command.
 func (o *ServerCmd) Execute(args []string) error {
 	s := New(*o)
 	return s.ListenAndServe()
@@ -111,6 +113,8 @@ func newSelfSignedCert() (tls.Certificate, error) {
 	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: priv, Leaf: leaf}, nil
 }
 
+// handleInspectRequest handles the HTTP request for inspecting TLS parameters.
+// It writes a JSON response with the details of the TLS handshake.
 func (s *Server) handleInspectRequest(w http.ResponseWriter, r *http.Request) {
 	if r.TLS == nil {
 		http.Error(w, "TLS required", http.StatusBadRequest)
@@ -166,7 +170,7 @@ func (s *Server) handleInspectRequest(w http.ResponseWriter, r *http.Request) {
 		"mtls":         mtls,
 		"negotiated": map[string]any{
 			"sni":          r.TLS.ServerName,
-            "ech":          ech,
+			"ech":          ech,
 			"alpn":         r.TLS.NegotiatedProtocol,
 			"tls_version":  tls.VersionName(r.TLS.Version),
 			"cipher_suite": tls.CipherSuiteName(r.TLS.CipherSuite),
@@ -184,6 +188,34 @@ func (s *Server) handleInspectRequest(w http.ResponseWriter, r *http.Request) {
 
 // ListenAndServe starts the TLS server.
 func (s *Server) ListenAndServe() error {
+	tlsConf, err := s.setupTLSConfig()
+	if err != nil {
+		return err
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", s.handleInspectRequest)
+
+	srv := &http.Server{
+		Addr:      s.opts.Addr,
+		Handler:   mux,
+		TLSConfig: tlsConf,
+		ConnContext: func(ctx context.Context, c net.Conn) context.Context {
+			return context.WithValue(ctx, ctxConnKey{}, c)
+		},
+		ConnState: func(c net.Conn, st http.ConnState) {
+			if st == http.StateClosed || st == http.StateHijacked {
+				s.chiStore.Delete(connKey(c))
+			}
+		},
+	}
+
+	log.Printf("Start listening on https://%s", s.opts.Addr)
+	return srv.ListenAndServeTLS("", "")
+}
+
+// setupTLSConfig creates a new tls.Config based on the server options.
+func (s *Server) setupTLSConfig() (*tls.Config, error) {
 	tlsConf := &tls.Config{}
 
 	var cert tls.Certificate
@@ -194,7 +226,7 @@ func (s *Server) ListenAndServe() error {
 		var err error
 		cert, err = tls.LoadX509KeyPair(s.opts.TLSCert, s.opts.TLSKey)
 		if err != nil {
-			fmt.Errorf("failed to load a key pair: %v", err)
+			return nil, fmt.Errorf("failed to load a key pair: %w", err)
 		}
 
 		tlsConf.Certificates = []tls.Certificate{cert}
@@ -204,7 +236,7 @@ func (s *Server) ListenAndServe() error {
 		var err error
 		cert, err = newSelfSignedCert()
 		if err != nil {
-			fmt.Errorf("failed to generate a self signed cert: %v", err)
+			return nil, fmt.Errorf("failed to generate a self signed cert: %w", err)
 		}
 
 		tlsConf.Certificates = []tls.Certificate{cert}
@@ -215,7 +247,7 @@ func (s *Server) ListenAndServe() error {
 
 		version, err := strToTLSVersion(s.opts.TLSMinVersion)
 		if err != nil {
-			fmt.Errorf("failed to set minimum tls version: %v", err)
+			return nil, fmt.Errorf("failed to set minimum tls version: %w", err)
 		}
 		tlsConf.MinVersion = version
 	}
@@ -225,7 +257,7 @@ func (s *Server) ListenAndServe() error {
 
 		version, err := strToTLSVersion(s.opts.TLSMaxVersion)
 		if err != nil {
-			fmt.Errorf("failed to set maximum tls version: %v", err)
+			return nil, fmt.Errorf("failed to set maximum tls version: %w", err)
 		}
 		tlsConf.MaxVersion = version
 	}
@@ -242,7 +274,7 @@ func (s *Server) ListenAndServe() error {
 		for i, v := range s.opts.CipherSuites {
 			c, err := strToCipherSuite(v)
 			if err != nil {
-				return err
+				return nil, err
 			}
 			suites[i] = c
 		}
@@ -252,12 +284,12 @@ func (s *Server) ListenAndServe() error {
 	log.Printf("Client mTLS Auth mode: %s", s.opts.MTLSAuth)
 	if s.opts.MTLSAuth != "off" {
 		if s.opts.MTLSClientCA == "" {
-			fmt.Errorf("--mtls-ca is required to enable mTLS")
+			return nil, fmt.Errorf("--mtls-ca is required to enable mTLS")
 		}
 
 		caCert, err := os.ReadFile(s.opts.MTLSClientCA)
 		if err != nil {
-			fmt.Errorf("failed to load client CA cert: %v", err)
+			return nil, fmt.Errorf("failed to load client CA cert: %w", err)
 		}
 		caCertPool := x509.NewCertPool()
 		caCertPool.AppendCertsFromPEM(caCert)
@@ -281,19 +313,19 @@ func (s *Server) ListenAndServe() error {
 		log.Printf("ECH Enabled: true")
 
 		if s.opts.ECHKey == "" || s.opts.ECHConfig == "" {
-			fmt.Errorf("--ech-key and --ech-config is required to enable ECH")
+			return nil, fmt.Errorf("--ech-key and --ech-config is required to enable ECH")
 		}
 
 		log.Printf("ECH Key (Base64): '%s'", s.opts.ECHKey)
 		key, err := base64.StdEncoding.DecodeString(s.opts.ECHKey)
 		if err != nil {
-			fmt.Errorf("failed to decode ech-key: %v", err)
+			return nil, fmt.Errorf("failed to decode ech-key: %w", err)
 		}
 
 		log.Printf("ECH Config (Base64): '%s'", s.opts.ECHConfig)
 		cfg, err := base64.StdEncoding.DecodeString(s.opts.ECHConfig)
 		if err != nil {
-			fmt.Errorf("failed to decode ech-config: %v", err)
+			return nil, fmt.Errorf("failed to decode ech-config: %w", err)
 		}
 
 		serverKey := tls.EncryptedClientHelloKey{Config: cfg, PrivateKey: key, SendAsRetry: true}
@@ -330,23 +362,5 @@ func (s *Server) ListenAndServe() error {
 		return nil, nil
 	}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/", s.handleInspectRequest)
-
-	srv := &http.Server{
-		Addr:      s.opts.Addr,
-		Handler:   mux,
-		TLSConfig: tlsConf,
-		ConnContext: func(ctx context.Context, c net.Conn) context.Context {
-			return context.WithValue(ctx, ctxConnKey{}, c)
-		},
-		ConnState: func(c net.Conn, st http.ConnState) {
-			if st == http.StateClosed || st == http.StateHijacked {
-				s.chiStore.Delete(connKey(c))
-			}
-		},
-	}
-
-	log.Printf("Start listening on https://%s", s.opts.Addr)
-	return srv.ListenAndServeTLS("", "")
+	return tlsConf, nil
 }

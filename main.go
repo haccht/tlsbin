@@ -7,6 +7,7 @@ import (
 	"github.com/jessevdk/go-flags"
 )
 
+// Options holds the command-line options for the application.
 type Options struct {
 	Server subcmd.ServerCmd `command:"server" description:"Run the TLS inspection server"`
 	Config subcmd.ConfigCmd `command:"config" description:"Generate configuration artifacts (mTLS/ECH)"`

@@ -17,32 +17,33 @@ import (
 	"github.com/c2FmZQ/ech"
 )
 
-// ConfigCmd holds the options for the 'config' command.
+// ConfigCmd holds the subcommands for the 'config' command.
 type ConfigCmd struct {
 	ECH  ConfigECHCmd  `command:"ech"  description:"Configure ECH key"`
 	MTLS ConfigMTLSCmd `command:"mtls" description:"Configure mTLS key"`
 }
 
-// ConfigECHCmd holds the options for the 'config ech' command.
+// ConfigECHCmd holds the options for the 'config ech' subcommand.
 type ConfigECHCmd struct {
 	ConfigID   uint8  `long:"config-id" description:"ConfigID for ECH" default:"1"`
 	PublicName string `long:"public-name" description:"PublicName for ECH" required:"true"`
 }
 
-// Execute runs the gen-ech command.
+// Execute generates and displays a new ECH key pair and configuration.
+// It is the entry point for the 'config ech' subcommand.
 func (o *ConfigECHCmd) Execute(args []string) error {
 	log.Println("Generating a new ECH key pair...")
 
 	key, cfg, err := ech.NewConfig(o.ConfigID, []byte(o.PublicName))
 	if err != nil {
-		return fmt.Errorf("Failed to generate ECH config: %v", err)
+		return fmt.Errorf("failed to generate ECH config: %w", err)
 	}
 	keyB64 := base64.StdEncoding.EncodeToString(key.Bytes())
 	cfgB64 := base64.StdEncoding.EncodeToString([]byte(cfg))
 
 	list, err := ech.ConfigList([]ech.Config{cfg})
 	if err != nil {
-		return fmt.Errorf("Failed to create ECH config list: %v", err)
+		return fmt.Errorf("failed to create ECH config list: %w", err)
 	}
 	listB64 := base64.StdEncoding.EncodeToString(list)
 
@@ -62,7 +63,7 @@ func (o *ConfigECHCmd) Execute(args []string) error {
 	return nil
 }
 
-// ConfigMTLSCmd holds the options for the 'config mtls' command.
+// ConfigMTLSCmd holds the options for the 'config mtls' subcommand.
 type ConfigMTLSCmd struct {
 	CommonName   string        `long:"cn" description:"Common Name for the CA" default:"tlsbin.net"`
 	Organization string        `long:"org" description:"Organization for the CA" default:"tlsbin"`
@@ -71,6 +72,8 @@ type ConfigMTLSCmd struct {
 	CAKeyPath    string        `long:"ca-key" description:"Path to the CA private key" default:"ca.key"`
 }
 
+// Execute generates a new CA key pair and saves them to the specified files.
+// It is the entry point for the 'config mtls' subcommand.
 func (o *ConfigMTLSCmd) Execute(args []string) error {
 	log.Println("Generating a new CA key pair...")
 
