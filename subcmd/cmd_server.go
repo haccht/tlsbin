@@ -107,9 +107,9 @@ func connKey(c net.Conn) string {
 // Server represents the TLS inspection server.
 type Server struct {
 	opts   ServerCmd
+	oStore sync.Map
 	cStore sync.Map
 	sStore sync.Map
-	oStore sync.Map
 }
 
 // New creates a new Server instance.
@@ -251,7 +251,6 @@ func (s *Server) applyCertificate(conf *tls.Config) error {
 		if err != nil {
 			return fmt.Errorf("failed to load a key pair: %w", err)
 		}
-		return nil
 	} else {
 		log.Printf("Generate a new self-signed cert")
 		cert, err = newSelfSignedCert()
@@ -272,16 +271,15 @@ func (s *Server) applyCertificate(conf *tls.Config) error {
 			Extensions:        mapSliceToString(chi.Extensions, toExtensionName),
 		})
 
-		leaf := ensureLeaf(&cert)
-		if leaf != nil {
+		if v := ensureLeaf(&cert); v != nil {
 			s.sStore.Store(k, servedCertInfo{
-				Subject:    leaf.Subject.String(),
-				Issuer:     leaf.Issuer.String(),
-				Serial:     fmt.Sprintf("%X", leaf.SerialNumber),
-				NotBefore:  leaf.NotBefore.UTC().Format(time.RFC3339),
-				NotAfter:   leaf.NotAfter.UTC().Format(time.RFC3339),
-				PubKeyAlgo: leaf.PublicKeyAlgorithm.String(),
-				DNSNames:   append([]string(nil), leaf.DNSNames...),
+				Subject:    v.Subject.String(),
+				Issuer:     v.Issuer.String(),
+				Serial:     fmt.Sprintf("%X", v.SerialNumber),
+				NotBefore:  v.NotBefore.UTC().Format(time.RFC3339),
+				NotAfter:   v.NotAfter.UTC().Format(time.RFC3339),
+				PubKeyAlgo: v.PublicKeyAlgorithm.String(),
+				DNSNames:   append([]string(nil), v.DNSNames...),
 			})
 		}
 		return nil, nil
@@ -419,11 +417,13 @@ func ensureLeaf(cert *tls.Certificate) *x509.Certificate {
 	if len(cert.Certificate) == 0 {
 		return nil
 	}
+
 	leaf, err := x509.ParseCertificate(cert.Certificate[0])
 	if err != nil {
 		log.Printf("failed to parse leaf certificate: %v", err)
 		return nil
 	}
+
 	cert.Leaf = leaf
 	return leaf
 }
