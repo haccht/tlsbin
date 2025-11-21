@@ -57,6 +57,44 @@ type servedCertInfo struct {
 	PubKeyAlgo string   `json:"public_key_algo"`
 }
 
+type clientCertInfo struct {
+	Subject    string `json:"subject"`
+	Issuer     string `json:"issuer"`
+	Serial     string `json:"serial"`
+	NotBefore  string `json:"not_before"`
+	NotAfter   string `json:"not_after"`
+	PubKeyAlgo string `json:"public_key_algo"`
+}
+
+type mtlsInfo struct {
+	Enabled     bool             `json:"enabled"`
+	ClientCerts []clientCertInfo `json:"client_certs,omitempty"`
+}
+
+type echInfo struct {
+	Accepted bool   `json:"accepted"`
+	OuterSNI string `json:"outer_sni,omitempty"`
+	InnerSNI string `json:"inner_sni,omitempty"`
+}
+
+type negotiatedInfo struct {
+	SNI         string  `json:"sni"`
+	ECH         echInfo `json:"ech"`
+	ALPN        string  `json:"alpn"`
+	TLSVersion  string  `json:"tls_version"`
+	CipherSuite string  `json:"cipher_suite"`
+	DidResume   bool    `json:"did_resume"`
+	OCSPBytes   int     `json:"ocsp_bytes"`
+	SCTs        int     `json:"scts"`
+}
+
+type inspectResponse struct {
+	ClientHello clientHelloInfo `json:"client_hello"`
+	ServedCert  servedCertInfo  `json:"served_cert"`
+	Negotiated  negotiatedInfo  `json:"negotiated"`
+	MTLS        mtlsInfo        `json:"mtls"`
+}
+
 type ctxConnKey struct{}
 
 func connKey(c net.Conn) string {
@@ -68,10 +106,10 @@ func connKey(c net.Conn) string {
 
 // Server represents the TLS inspection server.
 type Server struct {
-	opts     ServerCmd
-	chiStore sync.Map
-	sciStore sync.Map
-	osiStore sync.Map
+	opts   ServerCmd
+	oStore sync.Map
+	cStore sync.Map
+	sStore sync.Map
 }
 
 // New creates a new Server instance.
@@ -113,99 +151,62 @@ func newSelfSignedCert() (tls.Certificate, error) {
 	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: priv, Leaf: leaf}, nil
 }
 
-// handleInspectRequest handles the HTTP request for inspecting TLS parameters.
+// handleResponse handles the HTTP request for inspecting TLS parameters.
 // It writes a JSON response with the details of the TLS handshake.
-func (s *Server) handleInspectRequest(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleResponse(w http.ResponseWriter, r *http.Request) {
 	if r.TLS == nil {
 		http.Error(w, "TLS required", http.StatusBadRequest)
 		return
 	}
 
-	var osi string
-	var chi clientHelloInfo
-	var sci servedCertInfo
-	if v := r.Context().Value(ctxConnKey{}); v != nil {
-		if c, ok := v.(net.Conn); ok {
-			k := connKey(c)
-			if hv, ok := s.osiStore.Load(k); ok {
-				osi = hv.(string)
-			}
-			if hv, ok := s.chiStore.Load(k); ok {
-				chi = hv.(clientHelloInfo)
-			}
-			if hv, ok := s.sciStore.Load(k); ok {
-				sci = hv.(servedCertInfo)
-			}
-		}
-	}
+	conn := s.connFromContext(r.Context())
+	storeKey := connKey(conn)
+	outerSNI := s.loadOuterSNI(storeKey)
 
-	var mtls = map[string]any{"enabled": false}
-	if len(r.TLS.PeerCertificates) > 0 {
-		certs := make([]map[string]string, len(r.TLS.PeerCertificates))
-		for i, v := range r.TLS.PeerCertificates {
-			certs[i] = map[string]string{
-				"subject":         v.Subject.String(),
-				"issuer":          v.Issuer.String(),
-				"serial":          fmt.Sprintf("%X", v.SerialNumber),
-				"not_before":      v.NotBefore.UTC().Format(time.RFC3339),
-				"not_after":       v.NotAfter.UTC().Format(time.RFC3339),
-				"public_key_algo": v.PublicKeyAlgorithm.String(),
-			}
-		}
-
-		mtls["enabled"] = true
-		mtls["client_certs"] = certs
-	}
-
-	var ech = map[string]any{"accepted": false}
-	if r.TLS.ECHAccepted {
-		ech["accepted"] = true
-		ech["outer_sni"] = osi
-		ech["inner_sni"] = r.TLS.ServerName
-	}
-
-	resp := map[string]any{
-		"client_hello": chi,
-		"served_cert":  sci,
-		"mtls":         mtls,
-		"negotiated": map[string]any{
-			"sni":          r.TLS.ServerName,
-			"ech":          ech,
-			"alpn":         r.TLS.NegotiatedProtocol,
-			"tls_version":  tls.VersionName(r.TLS.Version),
-			"cipher_suite": tls.CipherSuiteName(r.TLS.CipherSuite),
-			"did_resume":   r.TLS.DidResume,
-			"ocsp_bytes":   len(r.TLS.OCSPResponse),
-			"scts":         len(r.TLS.SignedCertificateTimestamps),
+	resp := inspectResponse{
+		ClientHello: s.loadClientHelloInfo(storeKey),
+		ServedCert:  s.loadServedCertInfo(storeKey),
+		MTLS:        buildMTLSInfo(r.TLS.PeerCertificates),
+		Negotiated: negotiatedInfo{
+			SNI:         r.TLS.ServerName,
+			ECH:         buildECHInfo(r.TLS.ECHAccepted, outerSNI, r.TLS.ServerName),
+			ALPN:        r.TLS.NegotiatedProtocol,
+			TLSVersion:  tls.VersionName(r.TLS.Version),
+			CipherSuite: tls.CipherSuiteName(r.TLS.CipherSuite),
+			DidResume:   r.TLS.DidResume,
+			OCSPBytes:   len(r.TLS.OCSPResponse),
+			SCTs:        len(r.TLS.SignedCertificateTimestamps),
 		},
 	}
 
 	w.Header().Set("Content-Type", "application/json")
+
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
-	enc.Encode(resp)
+	if err := enc.Encode(resp); err != nil {
+		log.Printf("failed to encode response: %v", err)
+	}
 }
 
 // ListenAndServe starts the TLS server.
 func (s *Server) ListenAndServe() error {
-	tlsConf, err := s.setupTLSConfig()
+	conf, err := s.setupTLSConfig()
 	if err != nil {
 		return err
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/", s.handleInspectRequest)
-
+	mux.HandleFunc("/", s.handleResponse)
 	srv := &http.Server{
 		Addr:      s.opts.Addr,
 		Handler:   mux,
-		TLSConfig: tlsConf,
+		TLSConfig: conf,
 		ConnContext: func(ctx context.Context, c net.Conn) context.Context {
 			return context.WithValue(ctx, ctxConnKey{}, c)
 		},
 		ConnState: func(c net.Conn, st http.ConnState) {
 			if st == http.StateClosed || st == http.StateHijacked {
-				s.chiStore.Delete(connKey(c))
+				s.cStore.Delete(connKey(c))
 			}
 		},
 	}
@@ -216,133 +217,52 @@ func (s *Server) ListenAndServe() error {
 
 // setupTLSConfig creates a new tls.Config based on the server options.
 func (s *Server) setupTLSConfig() (*tls.Config, error) {
-	tlsConf := &tls.Config{}
+	conf := &tls.Config{}
+	if err := s.applyCertificate(conf); err != nil {
+		return nil, err
+	}
+	if err := s.applyTLSVersions(conf); err != nil {
+		return nil, err
+	}
+	if err := s.applyProtocols(conf); err != nil {
+		return nil, err
+	}
+	if err := s.applyCipherSuites(conf); err != nil {
+		return nil, err
+	}
+	if err := s.applyMTLS(conf); err != nil {
+		return nil, err
+	}
+	if err := s.applyECH(conf); err != nil {
+		return nil, err
+	}
+	return conf, nil
+}
 
+func (s *Server) applyCertificate(conf *tls.Config) error {
+	var err error
 	var cert tls.Certificate
+
 	if s.opts.TLSCert != "" && s.opts.TLSKey != "" {
 		log.Printf("TLS certificate: %s", s.opts.TLSCert)
 		log.Printf("TLS private key: %s", s.opts.TLSKey)
 
-		var err error
 		cert, err = tls.LoadX509KeyPair(s.opts.TLSCert, s.opts.TLSKey)
 		if err != nil {
-			return nil, fmt.Errorf("failed to load a key pair: %w", err)
+			return fmt.Errorf("failed to load a key pair: %w", err)
 		}
-
-		tlsConf.Certificates = []tls.Certificate{cert}
 	} else {
 		log.Printf("Generate a new self-signed cert")
-
-		var err error
 		cert, err = newSelfSignedCert()
 		if err != nil {
-			return nil, fmt.Errorf("failed to generate a self signed cert: %w", err)
-		}
-
-		tlsConf.Certificates = []tls.Certificate{cert}
-	}
-
-	if s.opts.TLSMinVersion != "" {
-		log.Printf("Minimal TLS vertion: %s", s.opts.TLSMinVersion)
-
-		version, err := strToTLSVersion(s.opts.TLSMinVersion)
-		if err != nil {
-			return nil, fmt.Errorf("failed to set minimum tls version: %w", err)
-		}
-		tlsConf.MinVersion = version
-	}
-
-	if s.opts.TLSMaxVersion != "" {
-		log.Printf("Maximum TLS vertion: %s", s.opts.TLSMaxVersion)
-
-		version, err := strToTLSVersion(s.opts.TLSMaxVersion)
-		if err != nil {
-			return nil, fmt.Errorf("failed to set maximum tls version: %w", err)
-		}
-		tlsConf.MaxVersion = version
-	}
-
-	if len(s.opts.Protocols) > 0 {
-		log.Printf("Protocols: %s", s.opts.Protocols)
-		tlsConf.NextProtos = s.opts.Protocols
-	}
-
-	if len(s.opts.CipherSuites) > 0 {
-		log.Printf("CipherSuites: %s", s.opts.CipherSuites)
-
-		suites := make([]uint16, len(s.opts.CipherSuites))
-		for i, v := range s.opts.CipherSuites {
-			c, err := strToCipherSuite(v)
-			if err != nil {
-				return nil, err
-			}
-			suites[i] = c
-		}
-		tlsConf.CipherSuites = suites
-	}
-
-	log.Printf("Client mTLS Auth mode: %s", s.opts.MTLSAuth)
-	if s.opts.MTLSAuth != "off" {
-		if s.opts.MTLSClientCA == "" {
-			return nil, fmt.Errorf("--mtls-ca is required to enable mTLS")
-		}
-
-		caCert, err := os.ReadFile(s.opts.MTLSClientCA)
-		if err != nil {
-			return nil, fmt.Errorf("failed to load client CA cert: %w", err)
-		}
-		caCertPool := x509.NewCertPool()
-		caCertPool.AppendCertsFromPEM(caCert)
-		tlsConf.ClientCAs = caCertPool
-	}
-
-	switch s.opts.MTLSAuth {
-	case "request":
-		tlsConf.ClientAuth = tls.RequestClientCert
-	case "required":
-		tlsConf.ClientAuth = tls.RequireAnyClientCert
-	case "verify":
-		tlsConf.ClientAuth = tls.RequireAndVerifyClientCert
-	case "verify-if-given":
-		tlsConf.ClientAuth = tls.VerifyClientCertIfGiven
-	default:
-		tlsConf.ClientAuth = tls.NoClientCert
-	}
-
-	if s.opts.ECHEnabled {
-		log.Printf("ECH Enabled: true")
-
-		if s.opts.ECHKey == "" || s.opts.ECHConfig == "" {
-			return nil, fmt.Errorf("--ech-key and --ech-config is required to enable ECH")
-		}
-
-		log.Printf("ECH Key (Base64): '%s'", s.opts.ECHKey)
-		key, err := base64.StdEncoding.DecodeString(s.opts.ECHKey)
-		if err != nil {
-			return nil, fmt.Errorf("failed to decode ech-key: %w", err)
-		}
-
-		log.Printf("ECH Config (Base64): '%s'", s.opts.ECHConfig)
-		cfg, err := base64.StdEncoding.DecodeString(s.opts.ECHConfig)
-		if err != nil {
-			return nil, fmt.Errorf("failed to decode ech-config: %w", err)
-		}
-
-		serverKey := tls.EncryptedClientHelloKey{Config: cfg, PrivateKey: key, SendAsRetry: true}
-		serverKeys := []tls.EncryptedClientHelloKey{serverKey}
-		tlsConf.EncryptedClientHelloKeys = serverKeys
-
-		tlsConf.GetEncryptedClientHelloKeys = func(chi *tls.ClientHelloInfo) ([]tls.EncryptedClientHelloKey, error) {
-			k := connKey(chi.Conn)
-			s.osiStore.LoadOrStore(k, chi.ServerName)
-			return serverKeys, nil
+			return fmt.Errorf("failed to generate a self signed cert: %w", err)
 		}
 	}
 
-	tlsConf.GetConfigForClient = func(chi *tls.ClientHelloInfo) (*tls.Config, error) {
-		v := cert.Leaf
+	conf.Certificates = []tls.Certificate{cert}
+	conf.GetConfigForClient = func(chi *tls.ClientHelloInfo) (*tls.Config, error) {
 		k := connKey(chi.Conn)
-		s.chiStore.Store(k, clientHelloInfo{
+		s.cStore.Store(k, clientHelloInfo{
 			ServerName:        chi.ServerName,
 			SupportedProtos:   chi.SupportedProtos,
 			CipherSuites:      mapSliceToString(chi.CipherSuites, toCipherSuiteName),
@@ -350,17 +270,223 @@ func (s *Server) setupTLSConfig() (*tls.Config, error) {
 			SignatureSchemes:  mapSliceToString(chi.SignatureSchemes, toSignatureSchemeName),
 			Extensions:        mapSliceToString(chi.Extensions, toExtensionName),
 		})
-		s.sciStore.Store(k, servedCertInfo{
+
+		if v := ensureLeaf(&cert); v != nil {
+			s.sStore.Store(k, servedCertInfo{
+				Subject:    v.Subject.String(),
+				Issuer:     v.Issuer.String(),
+				Serial:     fmt.Sprintf("%X", v.SerialNumber),
+				NotBefore:  v.NotBefore.UTC().Format(time.RFC3339),
+				NotAfter:   v.NotAfter.UTC().Format(time.RFC3339),
+				PubKeyAlgo: v.PublicKeyAlgorithm.String(),
+				DNSNames:   append([]string(nil), v.DNSNames...),
+			})
+		}
+		return nil, nil
+	}
+	return nil
+}
+
+func (s *Server) applyTLSVersions(conf *tls.Config) error {
+	if s.opts.TLSMinVersion != "" {
+		log.Printf("Minimal TLS version: %s", s.opts.TLSMinVersion)
+
+		version, err := strToTLSVersion(s.opts.TLSMinVersion)
+		if err != nil {
+			return fmt.Errorf("failed to set minimum tls version: %w", err)
+		}
+		conf.MinVersion = version
+	}
+
+	if s.opts.TLSMaxVersion != "" {
+		log.Printf("Maximum TLS version: %s", s.opts.TLSMaxVersion)
+
+		version, err := strToTLSVersion(s.opts.TLSMaxVersion)
+		if err != nil {
+			return fmt.Errorf("failed to set maximum tls version: %w", err)
+		}
+		conf.MaxVersion = version
+	}
+
+	return nil
+}
+
+func (s *Server) applyProtocols(conf *tls.Config) error {
+	if len(s.opts.Protocols) == 0 {
+		return nil
+	}
+
+	log.Printf("Protocols: %s", s.opts.Protocols)
+	conf.NextProtos = s.opts.Protocols
+	return nil
+}
+
+func (s *Server) applyCipherSuites(conf *tls.Config) error {
+	if len(s.opts.CipherSuites) == 0 {
+		return nil
+	}
+
+	log.Printf("CipherSuites: %s", s.opts.CipherSuites)
+
+	suites := make([]uint16, len(s.opts.CipherSuites))
+	for i, v := range s.opts.CipherSuites {
+		c, err := strToCipherSuite(v)
+		if err != nil {
+			return err
+		}
+		suites[i] = c
+	}
+	conf.CipherSuites = suites
+	return nil
+}
+
+func (s *Server) applyMTLS(conf *tls.Config) error {
+	log.Printf("Client mTLS Auth mode: %s", s.opts.MTLSAuth)
+	if s.opts.MTLSAuth == "off" {
+		conf.ClientAuth = tls.NoClientCert
+		return nil
+	}
+
+	if s.opts.MTLSClientCA == "" {
+		return fmt.Errorf("--mtls-ca is required to enable mTLS")
+	}
+
+	caCert, err := os.ReadFile(s.opts.MTLSClientCA)
+	if err != nil {
+		return fmt.Errorf("failed to load client CA cert: %w", err)
+	}
+	caCertPool := x509.NewCertPool()
+	caCertPool.AppendCertsFromPEM(caCert)
+	conf.ClientCAs = caCertPool
+
+	switch s.opts.MTLSAuth {
+	case "request":
+		conf.ClientAuth = tls.RequestClientCert
+	case "required":
+		conf.ClientAuth = tls.RequireAnyClientCert
+	case "verify":
+		conf.ClientAuth = tls.RequireAndVerifyClientCert
+	case "verify-if-given":
+		conf.ClientAuth = tls.VerifyClientCertIfGiven
+	default:
+		conf.ClientAuth = tls.NoClientCert
+	}
+
+	return nil
+}
+
+func (s *Server) applyECH(conf *tls.Config) error {
+	if !s.opts.ECHEnabled {
+		return nil
+	}
+
+	if s.opts.ECHKey == "" || s.opts.ECHConfig == "" {
+		return fmt.Errorf("--ech-key and --ech-config is required to enable ECH")
+	}
+
+	log.Printf("ECH Enabled: true")
+	log.Printf("ECH Key (Base64): '%s'", s.opts.ECHKey)
+
+	key, err := base64.StdEncoding.DecodeString(s.opts.ECHKey)
+	if err != nil {
+		return fmt.Errorf("failed to decode ech-key: %w", err)
+	}
+
+	log.Printf("ECH Config (Base64): '%s'", s.opts.ECHConfig)
+	cfg, err := base64.StdEncoding.DecodeString(s.opts.ECHConfig)
+	if err != nil {
+		return fmt.Errorf("failed to decode ech-config: %w", err)
+	}
+
+	serverKey := tls.EncryptedClientHelloKey{Config: cfg, PrivateKey: key, SendAsRetry: true}
+	serverKeys := []tls.EncryptedClientHelloKey{serverKey}
+	conf.EncryptedClientHelloKeys = serverKeys
+
+	conf.GetEncryptedClientHelloKeys = func(chi *tls.ClientHelloInfo) ([]tls.EncryptedClientHelloKey, error) {
+		k := connKey(chi.Conn)
+		s.oStore.LoadOrStore(k, chi.ServerName)
+		return serverKeys, nil
+	}
+	return nil
+}
+
+func ensureLeaf(cert *tls.Certificate) *x509.Certificate {
+	if cert.Leaf != nil {
+		return cert.Leaf
+	}
+	if len(cert.Certificate) == 0 {
+		return nil
+	}
+
+	leaf, err := x509.ParseCertificate(cert.Certificate[0])
+	if err != nil {
+		log.Printf("failed to parse leaf certificate: %v", err)
+		return nil
+	}
+
+	cert.Leaf = leaf
+	return leaf
+}
+
+func (s *Server) connFromContext(ctx context.Context) net.Conn {
+	if ctx == nil {
+		return nil
+	}
+	if conn, ok := ctx.Value(ctxConnKey{}).(net.Conn); ok {
+		return conn
+	}
+	return nil
+}
+
+func (s *Server) loadOuterSNI(key string) string {
+	v, _ := s.oStore.Load(key)
+	info, _ := v.(string)
+	return info
+}
+
+func (s *Server) loadClientHelloInfo(key string) clientHelloInfo {
+	v, _ := s.cStore.Load(key)
+	info, _ := v.(clientHelloInfo)
+	return info
+}
+
+func (s *Server) loadServedCertInfo(key string) servedCertInfo {
+	v, _ := s.sStore.Load(key)
+	info, _ := v.(servedCertInfo)
+	return info
+}
+
+func buildMTLSInfo(peerCerts []*x509.Certificate) mtlsInfo {
+	if len(peerCerts) == 0 {
+		return mtlsInfo{Enabled: false}
+	}
+
+	certs := make([]clientCertInfo, len(peerCerts))
+	for i, v := range peerCerts {
+		certs[i] = clientCertInfo{
 			Subject:    v.Subject.String(),
 			Issuer:     v.Issuer.String(),
 			Serial:     fmt.Sprintf("%X", v.SerialNumber),
 			NotBefore:  v.NotBefore.UTC().Format(time.RFC3339),
 			NotAfter:   v.NotAfter.UTC().Format(time.RFC3339),
 			PubKeyAlgo: v.PublicKeyAlgorithm.String(),
-			DNSNames:   append([]string(nil), v.DNSNames...),
-		})
-		return nil, nil
+		}
 	}
 
-	return tlsConf, nil
+	return mtlsInfo{
+		Enabled:     true,
+		ClientCerts: certs,
+	}
+}
+
+func buildECHInfo(accepted bool, outerSNI, innerSNI string) echInfo {
+	if !accepted {
+		return echInfo{Accepted: false}
+	}
+
+	return echInfo{
+		Accepted: true,
+		OuterSNI: outerSNI,
+		InnerSNI: innerSNI,
+	}
 }
