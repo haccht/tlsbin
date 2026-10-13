@@ -25,6 +25,7 @@ type clientHelloInfo struct {
 	SupportedProtos   []string `json:"alpn"`
 	SupportedVersions []string `json:"supported_versions"`
 	CipherSuites      []string `json:"cipher_suites"`
+	SupportedCurves   []string `json:"supported_curves,omitempty"`
 	SignatureSchemes  []string `json:"signature_schemes"`
 	Extensions        []string `json:"extensions"`
 }
@@ -72,7 +73,10 @@ type negotiatedInfo struct {
 	ALPN                        string  `json:"alpn"`
 	TLSVersion                  string  `json:"tls_version"`
 	CipherSuite                 string  `json:"cipher_suite"`
+	KeyExchange                 string  `json:"key_exchange,omitempty"`
 	DidResume                   bool    `json:"did_resume"`
+	HelloRetryRequest           bool    `json:"hello_retry_request"`
+	TLSUnique                   string  `json:"tls_unique,omitempty"`
 	OCSPBytes                   int     `json:"ocsp_bytes"`
 	SignedCertificateTimestamps int     `json:"signed_certificate_timestamps"`
 }
@@ -85,21 +89,18 @@ type inspectResponse struct {
 	Fingerprint fingerprintInfo `json:"fingerprint"`
 }
 
-type ctxConnKey struct{}
-
-func connKey(c net.Conn) string {
-	if c == nil {
-		return ""
-	}
-	return fmt.Sprintf("%s|%s", c.LocalAddr().String(), c.RemoteAddr().String())
+type connectionStateData struct {
+	mu          sync.Mutex
+	outerSNI    string
+	clientHello clientHelloInfo
+	servedCert  servedCertInfo
+	fingerprint fingerprintInfo
 }
 
+type ctxStateKey struct{}
+
 type Server struct {
-	opts   Options
-	oStore sync.Map
-	cStore sync.Map
-	sStore sync.Map
-	fStore sync.Map
+	opts Options
 }
 
 func New(opts Options) *Server {
@@ -119,16 +120,13 @@ func (s *Server) ListenAndServe() error {
 		Handler:   mux,
 		TLSConfig: conf,
 		ConnContext: func(ctx context.Context, c net.Conn) context.Context {
-			return context.WithValue(ctx, ctxConnKey{}, c)
-		},
-		ConnState: func(c net.Conn, st http.ConnState) {
-			if st == http.StateClosed || st == http.StateHijacked {
-				key := connKey(c)
-				s.oStore.Delete(key)
-				s.cStore.Delete(key)
-				s.sStore.Delete(key)
-				s.fStore.Delete(key)
+			var state *connectionStateData
+			if tc, ok := c.(*tls.Conn); ok {
+				if pc, ok := tc.NetConn().(*prefixConn); ok {
+					state = pc.state
+				}
 			}
+			return context.WithValue(ctx, ctxStateKey{}, state)
 		},
 	}
 
@@ -138,7 +136,7 @@ func (s *Server) ListenAndServe() error {
 		return err
 	}
 
-	tlsLn := tls.NewListener(newObservedListener(ln, s), conf)
+	tlsLn := tls.NewListener(newObservedListener(ln), conf)
 	return srv.Serve(tlsLn)
 }
 
@@ -148,21 +146,47 @@ func (s *Server) handleResponse(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	conn := s.connFromContext(r.Context())
-	storeKey := connKey(conn)
+	state := s.stateFromContext(r.Context())
+
+	var outerSNI string
+	var clientHello clientHelloInfo
+	var servedCert servedCertInfo
+	var fingerprint fingerprintInfo
+
+	if state != nil {
+		state.mu.Lock()
+		outerSNI = state.outerSNI
+		clientHello = state.clientHello
+		servedCert = state.servedCert
+		fingerprint = state.fingerprint
+		state.mu.Unlock()
+	}
+
+	var keyExchange string
+	if r.TLS.CurveID != 0 {
+		keyExchange = toCurveIDName(r.TLS.CurveID)
+	}
+
+	var tlsUnique string
+	if len(r.TLS.TLSUnique) > 0 {
+		tlsUnique = fmt.Sprintf("%x", r.TLS.TLSUnique)
+	}
 
 	resp := inspectResponse{
-		ClientHello: s.loadClientHelloInfo(storeKey),
-		ServedCert:  s.loadServedCertInfo(storeKey),
+		ClientHello: clientHello,
+		ServedCert:  servedCert,
 		MTLS:        buildMTLSInfo(r.TLS.PeerCertificates),
-		Fingerprint: s.loadFingerprintInfo(storeKey),
+		Fingerprint: fingerprint,
 		Negotiated: negotiatedInfo{
 			SNI:                         r.TLS.ServerName,
-			ECH:                         buildECHInfo(r.TLS.ECHAccepted, s.loadOuterSNI(storeKey), r.TLS.ServerName),
+			ECH:                         buildECHInfo(r.TLS.ECHAccepted, outerSNI, r.TLS.ServerName),
 			ALPN:                        r.TLS.NegotiatedProtocol,
 			TLSVersion:                  tls.VersionName(r.TLS.Version),
 			CipherSuite:                 tls.CipherSuiteName(r.TLS.CipherSuite),
+			KeyExchange:                 keyExchange,
 			DidResume:                   r.TLS.DidResume,
+			HelloRetryRequest:           r.TLS.HelloRetryRequest,
+			TLSUnique:                   tlsUnique,
 			OCSPBytes:                   len(r.TLS.OCSPResponse),
 			SignedCertificateTimestamps: len(r.TLS.SignedCertificateTimestamps),
 		},
@@ -223,25 +247,29 @@ func (s *Server) applyCertificate(conf *tls.Config) error {
 
 	conf.Certificates = []tls.Certificate{cert}
 	conf.GetConfigForClient = func(chi *tls.ClientHelloInfo) (*tls.Config, error) {
-		key := connKey(chi.Conn)
-		s.cStore.Store(key, clientHelloInfo{
-			ServerName:        chi.ServerName,
-			SupportedProtos:   chi.SupportedProtos,
-			CipherSuites:      mapSliceToString(chi.CipherSuites, toCipherSuiteName),
-			SupportedVersions: mapSliceToString(chi.SupportedVersions, toTLSVersionName),
-			SignatureSchemes:  mapSliceToString(chi.SignatureSchemes, toSignatureSchemeName),
-			Extensions:        mapSliceToString(chi.Extensions, toExtensionName),
-		})
-		if v := ensureLeaf(&cert); v != nil {
-			s.sStore.Store(key, servedCertInfo{
-				Subject:    v.Subject.String(),
-				Issuer:     v.Issuer.String(),
-				Serial:     fmt.Sprintf("%X", v.SerialNumber),
-				NotBefore:  v.NotBefore.UTC().Format(time.RFC3339),
-				NotAfter:   v.NotAfter.UTC().Format(time.RFC3339),
-				PubKeyAlgo: v.PublicKeyAlgorithm.String(),
-				DNSNames:   append([]string(nil), v.DNSNames...),
-			})
+		if pc, ok := chi.Conn.(*prefixConn); ok && pc.state != nil {
+			pc.state.mu.Lock()
+			pc.state.clientHello = clientHelloInfo{
+				ServerName:        chi.ServerName,
+				SupportedProtos:   chi.SupportedProtos,
+				CipherSuites:      mapSliceToString(chi.CipherSuites, toCipherSuiteName),
+				SupportedCurves:   mapSliceToString(chi.SupportedCurves, toCurveIDName),
+				SupportedVersions: mapSliceToString(chi.SupportedVersions, toTLSVersionName),
+				SignatureSchemes:  mapSliceToString(chi.SignatureSchemes, toSignatureSchemeName),
+				Extensions:        mapSliceToString(chi.Extensions, toExtensionName),
+			}
+			if v := ensureLeaf(&cert); v != nil {
+				pc.state.servedCert = servedCertInfo{
+					Subject:    v.Subject.String(),
+					Issuer:     v.Issuer.String(),
+					Serial:     fmt.Sprintf("%X", v.SerialNumber),
+					NotBefore:  v.NotBefore.UTC().Format(time.RFC3339),
+					NotAfter:   v.NotAfter.UTC().Format(time.RFC3339),
+					PubKeyAlgo: v.PublicKeyAlgorithm.String(),
+					DNSNames:   append([]string(nil), v.DNSNames...),
+				}
+			}
+			pc.state.mu.Unlock()
 		}
 		return nil, nil
 	}
@@ -302,13 +330,16 @@ func (s *Server) applyCipherSuites(conf *tls.Config) error {
 
 func (s *Server) applyMTLS(conf *tls.Config) error {
 	log.Printf("Client mTLS Auth mode: %s", s.opts.MTLSAuth)
-	if s.opts.MTLSAuth == "off" {
+	if s.opts.MTLSAuth == "off" || s.opts.MTLSAuth == "" {
+		if s.opts.MTLSClientCA != "" {
+			return fmt.Errorf("--mtls-ca is specified but --mtls-auth is off")
+		}
 		conf.ClientAuth = tls.NoClientCert
 		return nil
 	}
 
 	if s.opts.MTLSClientCA == "" {
-		return fmt.Errorf("--mtls-ca is required to enable mTLS")
+		return fmt.Errorf("--mtls-ca is required when --mtls-auth is %s", s.opts.MTLSAuth)
 	}
 
 	caCert, err := os.ReadFile(s.opts.MTLSClientCA)
@@ -363,7 +394,11 @@ func (s *Server) applyECH(conf *tls.Config) error {
 	}}
 	conf.EncryptedClientHelloKeys = serverKeys
 	conf.GetEncryptedClientHelloKeys = func(chi *tls.ClientHelloInfo) ([]tls.EncryptedClientHelloKey, error) {
-		s.oStore.LoadOrStore(connKey(chi.Conn), chi.ServerName)
+		if pc, ok := chi.Conn.(*prefixConn); ok && pc.state != nil {
+			pc.state.mu.Lock()
+			pc.state.outerSNI = chi.ServerName
+			pc.state.mu.Unlock()
+		}
 		return serverKeys, nil
 	}
 	return nil
@@ -375,7 +410,7 @@ func newSelfSignedCert() (tls.Certificate, error) {
 		return tls.Certificate{}, fmt.Errorf("keygen: %v", err)
 	}
 
-	serial, _ := rand.Int(rand.Reader, big.NewInt(1<<62))
+	serial, _ := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
 	tpl := &x509.Certificate{
 		SerialNumber:          serial,
 		Subject:               pkix.Name{CommonName: "localhost"},
@@ -415,36 +450,12 @@ func ensureLeaf(cert *tls.Certificate) *x509.Certificate {
 	return leaf
 }
 
-func (s *Server) connFromContext(ctx context.Context) net.Conn {
+func (s *Server) stateFromContext(ctx context.Context) *connectionStateData {
 	if ctx == nil {
 		return nil
 	}
-	conn, _ := ctx.Value(ctxConnKey{}).(net.Conn)
-	return conn
-}
-
-func (s *Server) loadOuterSNI(key string) string {
-	v, _ := s.oStore.Load(key)
-	info, _ := v.(string)
-	return info
-}
-
-func (s *Server) loadFingerprintInfo(key string) fingerprintInfo {
-	v, _ := s.fStore.Load(key)
-	info, _ := v.(fingerprintInfo)
-	return info
-}
-
-func (s *Server) loadClientHelloInfo(key string) clientHelloInfo {
-	v, _ := s.cStore.Load(key)
-	info, _ := v.(clientHelloInfo)
-	return info
-}
-
-func (s *Server) loadServedCertInfo(key string) servedCertInfo {
-	v, _ := s.sStore.Load(key)
-	info, _ := v.(servedCertInfo)
-	return info
+	st, _ := ctx.Value(ctxStateKey{}).(*connectionStateData)
+	return st
 }
 
 func buildMTLSInfo(peerCerts []*x509.Certificate) mtlsInfo {

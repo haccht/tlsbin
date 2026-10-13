@@ -21,12 +21,16 @@ const (
 
 type observedListener struct {
 	net.Listener
-	server *Server
 }
 
 type prefixConn struct {
 	net.Conn
 	reader io.Reader
+	state  *connectionStateData
+}
+
+func (c *prefixConn) NetConn() net.Conn {
+	return c.Conn
 }
 
 type parsedClientHello struct {
@@ -41,8 +45,16 @@ type parsedClientHello struct {
 	supportedProtos   []string
 }
 
-func newObservedListener(ln net.Listener, server *Server) net.Listener {
-	return &observedListener{Listener: ln, server: server}
+func newObservedListener(ln net.Listener) net.Listener {
+	return &observedListener{Listener: ln}
+}
+
+func newPrefixConn(conn net.Conn, prefix []byte, state *connectionStateData) net.Conn {
+	return &prefixConn{
+		Conn:   conn,
+		reader: io.MultiReader(bytes.NewReader(prefix), conn),
+		state:  state,
+	}
 }
 
 func (l *observedListener) Accept() (net.Conn, error) {
@@ -51,31 +63,19 @@ func (l *observedListener) Accept() (net.Conn, error) {
 		return nil, err
 	}
 
-	wrapped, hello, err := captureClientHello(conn)
-	if err != nil && hello == nil {
-		return wrapped, nil
-	}
+	state := &connectionStateData{}
+	wrapped, hello, err := captureClientHello(conn, state)
 	if hello != nil {
-		l.server.fStore.Store(connKey(wrapped), buildFingerprintInfo(hello))
+		state.fingerprint = buildFingerprintInfo(hello)
 	}
-	return wrapped, nil
+	return wrapped, err
 }
 
 func (c *prefixConn) Read(p []byte) (int, error) {
 	return c.reader.Read(p)
 }
 
-func newPrefixConn(conn net.Conn, prefix []byte) net.Conn {
-	if len(prefix) == 0 {
-		return conn
-	}
-	return &prefixConn{
-		Conn:   conn,
-		reader: io.MultiReader(bytes.NewReader(prefix), conn),
-	}
-}
-
-func captureClientHello(conn net.Conn) (net.Conn, *parsedClientHello, error) {
+func captureClientHello(conn net.Conn, state *connectionStateData) (net.Conn, *parsedClientHello, error) {
 	var raw bytes.Buffer
 	var handshake bytes.Buffer
 
@@ -84,7 +84,7 @@ func captureClientHello(conn net.Conn) (net.Conn, *parsedClientHello, error) {
 		n, err := io.ReadFull(conn, header)
 		raw.Write(header[:n])
 		if err != nil {
-			rawConn := newPrefixConn(conn, raw.Bytes())
+			rawConn := newPrefixConn(conn, raw.Bytes(), state)
 			return rawConn, nil, err
 		}
 
@@ -93,12 +93,12 @@ func captureClientHello(conn net.Conn) (net.Conn, *parsedClientHello, error) {
 		n, err = io.ReadFull(conn, payload)
 		raw.Write(payload[:n])
 		if err != nil {
-			rawConn := newPrefixConn(conn, raw.Bytes())
+			rawConn := newPrefixConn(conn, raw.Bytes(), state)
 			return rawConn, nil, err
 		}
 
 		if header[0] != tlsRecordTypeHandshake {
-			rawConn := newPrefixConn(conn, raw.Bytes())
+			rawConn := newPrefixConn(conn, raw.Bytes(), state)
 			return rawConn, nil, fmt.Errorf("unexpected TLS record type %d", header[0])
 		}
 
@@ -108,7 +108,7 @@ func captureClientHello(conn net.Conn) (net.Conn, *parsedClientHello, error) {
 			continue
 		}
 		if buf[0] != tlsHandshakeClientHello {
-			rawConn := newPrefixConn(conn, raw.Bytes())
+			rawConn := newPrefixConn(conn, raw.Bytes(), state)
 			return rawConn, nil, fmt.Errorf("unexpected handshake type %d", buf[0])
 		}
 
@@ -118,11 +118,11 @@ func captureClientHello(conn net.Conn) (net.Conn, *parsedClientHello, error) {
 		}
 
 		hello, err := parseClientHello(buf[4 : 4+helloLen])
-		rawConn := newPrefixConn(conn, raw.Bytes())
+		rawConn := newPrefixConn(conn, raw.Bytes(), state)
 		return rawConn, hello, err
 	}
 
-	rawConn := newPrefixConn(conn, raw.Bytes())
+	rawConn := newPrefixConn(conn, raw.Bytes(), state)
 	return rawConn, nil, fmt.Errorf("client hello exceeded %d bytes", maxClientHelloRecordBytes)
 }
 

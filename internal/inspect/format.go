@@ -75,6 +75,25 @@ func toExtensionName(id uint16) string {
 	return fmt.Sprintf("%s (0x%04x)", name, id)
 }
 
+func toCurveIDName(id tls.CurveID) string {
+	u16 := uint16(id)
+	if isGREASE(u16) {
+		return fmt.Sprintf("Reserved (GREASE) (0x%04x)", u16)
+	}
+	s := id.String()
+	if s != fmt.Sprintf("CurveID(%d)", u16) {
+		return fmt.Sprintf("%s (0x%04x)", s, u16)
+	}
+	if name, ok := godicttls.DictSupportedGroupsValueIndexed[u16]; ok {
+		return fmt.Sprintf("%s (0x%04x)", name, u16)
+	}
+	return fmt.Sprintf("%s (0x%04x)", s, u16)
+}
+
+func toCurveIDNameFromUint16(id uint16) string {
+	return toCurveIDName(tls.CurveID(id))
+}
+
 func mapSliceToString[T any](in []T, f func(T) string) []string {
 	out := make([]string, len(in))
 	for i, v := range in {

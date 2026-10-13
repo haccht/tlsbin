@@ -1,6 +1,6 @@
 module github.com/haccht/tlsbin
 
-go 1.25.4
+go 1.26
 
 require (
 	github.com/c2FmZQ/ech v0.3.7
