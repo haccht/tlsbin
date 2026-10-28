@@ -11,6 +11,7 @@ import (
 	"net"
 	"slices"
 	"strings"
+	"sync"
 )
 
 const (
@@ -25,6 +26,7 @@ type observedListener struct {
 
 type prefixConn struct {
 	net.Conn
+	once   sync.Once
 	reader io.Reader
 	state  *connectionStateData
 }
@@ -63,16 +65,32 @@ func (l *observedListener) Accept() (net.Conn, error) {
 		return nil, err
 	}
 
-	state := &connectionStateData{}
-	wrapped, hello, err := captureClientHello(conn, state)
-	if hello != nil {
-		state.fingerprint = buildFingerprintInfo(hello)
-	}
-	return wrapped, err
+	return &prefixConn{
+		Conn:  conn,
+		state: &connectionStateData{},
+	}, nil
 }
 
 func (c *prefixConn) Read(p []byte) (int, error) {
+	c.once.Do(c.initReader)
 	return c.reader.Read(p)
+}
+
+func (c *prefixConn) initReader() {
+	if c.reader != nil {
+		return
+	}
+	wrapped, hello, _ := captureClientHello(c.Conn, c.state)
+	if hello != nil && c.state != nil {
+		c.state.mu.Lock()
+		c.state.fingerprint = buildFingerprintInfo(hello)
+		c.state.mu.Unlock()
+	}
+	if pc, ok := wrapped.(*prefixConn); ok {
+		c.reader = pc.reader
+	} else {
+		c.reader = wrapped
+	}
 }
 
 func captureClientHello(conn net.Conn, state *connectionStateData) (net.Conn, *parsedClientHello, error) {
@@ -88,6 +106,11 @@ func captureClientHello(conn net.Conn, state *connectionStateData) (net.Conn, *p
 			return rawConn, nil, err
 		}
 
+		if header[0] != tlsRecordTypeHandshake {
+			rawConn := newPrefixConn(conn, raw.Bytes(), state)
+			return rawConn, nil, fmt.Errorf("unexpected TLS record type %d", header[0])
+		}
+
 		recordLen := int(binary.BigEndian.Uint16(header[3:5]))
 		payload := make([]byte, recordLen)
 		n, err = io.ReadFull(conn, payload)
@@ -95,11 +118,6 @@ func captureClientHello(conn net.Conn, state *connectionStateData) (net.Conn, *p
 		if err != nil {
 			rawConn := newPrefixConn(conn, raw.Bytes(), state)
 			return rawConn, nil, err
-		}
-
-		if header[0] != tlsRecordTypeHandshake {
-			rawConn := newPrefixConn(conn, raw.Bytes(), state)
-			return rawConn, nil, fmt.Errorf("unexpected TLS record type %d", header[0])
 		}
 
 		handshake.Write(payload)

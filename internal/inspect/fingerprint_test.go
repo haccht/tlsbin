@@ -1,6 +1,16 @@
 package inspect
 
-import "testing"
+import (
+	"bytes"
+	"context"
+	"crypto/tls"
+	"encoding/json"
+	"io"
+	"log"
+	"net"
+	"net/http"
+	"testing"
+)
 
 func TestBuildJA3RawAndHash(t *testing.T) {
 	hello := &parsedClientHello{
@@ -48,5 +58,129 @@ func TestBuildJA4(t *testing.T) {
 
 	if got, want := buildJA4(hello), "t13d1516h2_8daaf6152771_9ce86794d805"; got != want {
 		t.Fatalf("unexpected JA4: got %q want %q", got, want)
+	}
+}
+
+func TestObservedListenerSurvivesMalformedConnections(t *testing.T) {
+	s := New(Options{Addr: "127.0.0.1:0"})
+	conf, err := s.setupTLSConfig()
+	if err != nil {
+		t.Fatalf("setupTLSConfig() error = %v", err)
+	}
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("net.Listen() error = %v", err)
+	}
+	defer ln.Close()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", s.handleResponse)
+	srv := &http.Server{
+		Handler:   mux,
+		TLSConfig: conf,
+		ErrorLog:  log.New(io.Discard, "", 0),
+		ConnContext: func(ctx context.Context, c net.Conn) context.Context {
+			var state *connectionStateData
+			if tc, ok := c.(*tls.Conn); ok {
+				if pc, ok := tc.NetConn().(*prefixConn); ok {
+					state = pc.state
+				}
+			}
+			return context.WithValue(ctx, ctxStateKey{}, state)
+		},
+	}
+
+	tlsLn := tls.NewListener(newObservedListener(ln), conf)
+	serveErrCh := make(chan error, 1)
+	go func() {
+		serveErrCh <- srv.Serve(tlsLn)
+	}()
+	defer srv.Close()
+
+	addr := ln.Addr().String()
+
+	// 1. Immediate EOF without sending any bytes.
+	c1, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("Dial c1 error = %v", err)
+	}
+	_ = c1.Close()
+
+	// 2. SSLv2 ClientHello (record type 128 = 0x80) with large fake length in bytes 3..4.
+	c2, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("Dial c2 error = %v", err)
+	}
+	_, _ = c2.Write([]byte{0x80, 0x2e, 0x01, 0xff, 0xff})
+	_, _ = io.Copy(io.Discard, c2)
+	_ = c2.Close()
+
+	// 3. Idle connection that sends nothing should not block subsequent connections.
+	c3, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("Dial c3 error = %v", err)
+	}
+	defer c3.Close()
+
+	// 4. Valid HTTPS request should succeed and return fingerprints.
+	client := &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{
+				InsecureSkipVerify: true,
+				ServerName:         "localhost",
+			},
+		},
+	}
+	resp, err := client.Get("https://" + addr + "/")
+	if err != nil {
+		t.Fatalf("HTTPS GET error = %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	var got inspectResponse
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode response error = %v", err)
+	}
+	if got.Fingerprint.JA3 == "" || got.Fingerprint.JA4 == "" {
+		t.Fatalf("expected non-empty fingerprints, got %+v", got.Fingerprint)
+	}
+
+	select {
+	case err := <-serveErrCh:
+		t.Fatalf("srv.Serve exited unexpectedly: %v", err)
+	default:
+	}
+}
+
+func TestCaptureClientHelloNonHandshakeDoesNotReadPayload(t *testing.T) {
+	// Record type 128 (0x80) with bytes 3..4 = 0x2000 (8192 bytes), but only 5 bytes available.
+	input := []byte{0x80, 0x2e, 0x01, 0x20, 0x00}
+	serverConn, clientConn := net.Pipe()
+	defer serverConn.Close()
+	defer clientConn.Close()
+
+	go func() {
+		_, _ = clientConn.Write(input)
+	}()
+
+	wrapped, hello, err := captureClientHello(serverConn, &connectionStateData{})
+	if err == nil {
+		t.Fatal("expected error for non-handshake record type, got nil")
+	}
+	if hello != nil {
+		t.Fatalf("expected nil hello, got %+v", hello)
+	}
+
+	replayed := make([]byte, len(input))
+	if _, err := io.ReadFull(wrapped, replayed); err != nil {
+		t.Fatalf("failed to read replayed bytes: %v", err)
+	}
+	if !bytes.Equal(replayed, input) {
+		t.Fatalf("replayed bytes = %x, want %x", replayed, input)
 	}
 }
